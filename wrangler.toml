@@ -1,0 +1,54 @@
+"$schema" = "./node_modules/wrangler/config-schema.json"
+main = "custom-worker.ts"
+name = "zenshi"
+compatibility_date = "2026-02-04"
+compatibility_flags = [ "nodejs_compat" ]
+
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
+[vars]
+AUTH_URL = "https://your-domain.example"
+AUTH_TRUST_HOST = "true"
+
+[[routes]]
+pattern = "your-domain.example"
+custom_domain = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "your-d1-database-name"
+database_id = "00000000-0000-0000-0000-000000000000"
+remote = true
+
+[[r2_buckets]]
+binding = "FAVICON_BUCKET"
+bucket_name = "your-favicon-bucket"
+
+[triggers]
+crons = ["0 2 * * *"]
+
+[queues]
+producers = [
+  { queue = "gsc-sync", binding = "GSC_SYNC_QUEUE" }
+]
+
+consumers = [
+  { queue = "gsc-sync", max_batch_size = 5, max_batch_timeout = 5, max_retries = 3, max_concurrency = 1 }
+]
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
