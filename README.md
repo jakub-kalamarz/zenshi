@@ -21,11 +21,11 @@ Zenshi is a Next.js + Cloudflare Worker app for syncing Google Search Console (G
 
 ### Dashboard view
 
-![Dashboard view](./docs/dashboard-view.png)
+![Dashboard view](./docs/gh-dashboard.png)
 
-### Site card view
+### Details view
 
-![Site card view](./docs/site-card-view.png)
+![Details view](./docs/gh-details.png)
 
 ## Prerequisites
 
