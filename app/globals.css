@@ -52,6 +52,10 @@
 }
 
 :root {
+  --font-bricolage-grotesque: "Bricolage Grotesque", "Satoshi", "Inter", system-ui,
+    -apple-system, "Segoe UI", "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", "SFMono-Regular", Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
   --background: oklch(1 0 0);
   --foreground: oklch(0.141 0.005 285.823);
   --card: oklch(1 0 0);

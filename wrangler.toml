@@ -11,6 +11,7 @@ binding = "ASSETS"
 [vars]
 AUTH_URL = "https://zenshi.dev"
 AUTH_TRUST_HOST = "true"
+NEXT_PUBLIC_SITE_URL = "https://zenshi.dev"
 
 [[routes]]
 pattern = "zenshi.dev"

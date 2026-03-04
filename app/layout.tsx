@@ -1,17 +1,14 @@
-import { Bricolage_Grotesque, Geist_Mono } from "next/font/google";
+import type { Metadata } from "next";
+import "@fontsource-variable/bricolage-grotesque";
+import "@fontsource/geist-mono";
 import "./globals.css";
 import { cookies } from "next/headers";
 import { normalizeLocale } from "@/lib/locale";
+import { getSiteUrl } from "@/lib/seo";
 
-const bricolageGrotesque = Bricolage_Grotesque({
-  variable: "--font-bricolage-grotesque",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+export const metadata: Metadata = {
+  metadataBase: getSiteUrl(),
+};
 
 export default async function RootLayout({
   children,
@@ -24,12 +21,9 @@ export default async function RootLayout({
   return (
     <html
       lang={locale}
-      className={bricolageGrotesque.className}
       suppressHydrationWarning
     >
-      <body
-        className={`${bricolageGrotesque.variable} ${geistMono.variable} antialiased tracking-tight`}
-      >
+      <body className="antialiased tracking-tight">
         {children}
       </body>
     </html>
