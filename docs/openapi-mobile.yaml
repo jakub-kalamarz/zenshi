@@ -1,4 +1,4 @@
-openapi: 3.1.0
+openapi: 3.0.3
 info:
   title: Zenshi Mobile API
   version: 1.0.0
@@ -25,7 +25,8 @@ components:
       required: [ok, error]
       properties:
         ok:
-          const: false
+          type: boolean
+          enum: [false]
         error:
           type: object
           required: [code, message]
@@ -42,7 +43,8 @@ components:
       required: [ok, data]
       properties:
         ok:
-          const: true
+          type: boolean
+          enum: [true]
         data:
           type: object
           additionalProperties: true
@@ -226,52 +228,82 @@ components:
           type: number
           nullable: true
     PageMetricsRow:
-      allOf:
-        - $ref: "#/components/schemas/MetricsRow"
-        - type: object
-          required: [page]
-          properties:
-            page:
-              type: string
-            compareClicks:
-              type: number
-              nullable: true
-            compareImpressions:
-              type: number
-              nullable: true
-            compareCtr:
-              type: number
-              nullable: true
-            comparePosition:
-              type: number
-              nullable: true
+      type: object
+      required: [page]
+      properties:
+        page:
+          type: string
+        clicks:
+          type: number
+          nullable: true
+        impressions:
+          type: number
+          nullable: true
+        ctr:
+          type: number
+          nullable: true
+        position:
+          type: number
+          nullable: true
+        compareClicks:
+          type: number
+          nullable: true
+        compareImpressions:
+          type: number
+          nullable: true
+        compareCtr:
+          type: number
+          nullable: true
+        comparePosition:
+          type: number
+          nullable: true
     QueryMetricsRow:
-      allOf:
-        - $ref: "#/components/schemas/MetricsRow"
-        - type: object
-          required: [query]
-          properties:
-            query:
-              type: string
-            compareClicks:
-              type: number
-              nullable: true
-            compareImpressions:
-              type: number
-              nullable: true
-            compareCtr:
-              type: number
-              nullable: true
-            comparePosition:
-              type: number
-              nullable: true
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        clicks:
+          type: number
+          nullable: true
+        impressions:
+          type: number
+          nullable: true
+        ctr:
+          type: number
+          nullable: true
+        position:
+          type: number
+          nullable: true
+        compareClicks:
+          type: number
+          nullable: true
+        compareImpressions:
+          type: number
+          nullable: true
+        compareCtr:
+          type: number
+          nullable: true
+        comparePosition:
+          type: number
+          nullable: true
     SeriesPoint:
-      allOf:
-        - $ref: "#/components/schemas/MetricsRow"
-        - type: object
-          properties:
-            date:
-              type: string
+      type: object
+      properties:
+        date:
+          type: string
+        clicks:
+          type: number
+          nullable: true
+        impressions:
+          type: number
+          nullable: true
+        ctr:
+          type: number
+          nullable: true
+        position:
+          type: number
+          nullable: true
     Retention:
       type: object
       required: [start, end, partiallyOutside]
