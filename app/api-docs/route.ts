@@ -1,6 +1,7 @@
 const scalarScriptUrl = "https://cdn.jsdelivr.net/npm/@scalar/api-reference"
 
-const html = `<!doctype html>
+function renderHtml(openapiUrl: string) {
+  return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -16,14 +17,26 @@ const html = `<!doctype html>
     <script src="${scalarScriptUrl}"></script>
     <script>
       Scalar.createApiReference('#api-reference', {
-        url: '/openapi-mobile.yaml'
+        sources: [
+          {
+            url: '${openapiUrl}',
+            title: 'Zenshi Mobile API',
+            slug: 'mobile',
+            default: true,
+          }
+        ],
+        agent: {
+          disabled: true
+        }
       })
     </script>
   </body>
 </html>`
+}
 
-export async function GET() {
-  return new Response(html, {
+export async function GET(request: Request) {
+  const openapiUrl = new URL("/openapi-mobile.yaml", request.url).toString();
+  return new Response(renderHtml(openapiUrl), {
     headers: {
       "content-type": "text/html; charset=utf-8",
     },
