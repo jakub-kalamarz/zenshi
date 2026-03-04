@@ -3,6 +3,7 @@ main = "custom-worker.ts"
 name = "zenshi"
 compatibility_date = "2026-02-04"
 compatibility_flags = [ "nodejs_compat" ]
+workers_dev = true
 
 [assets]
 directory = ".open-next/assets"
@@ -14,7 +15,7 @@ AUTH_TRUST_HOST = "true"
 NEXT_PUBLIC_SITE_URL = "https://zenshi.dev"
 
 [[routes]]
-pattern = "zenshi.dev"
+pattern = "zenshi.dev/*"
 custom_domain = true
 
 [[d1_databases]]
