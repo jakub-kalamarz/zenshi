@@ -1,7 +1,6 @@
 import { auth } from "@/lib/auth"
 import { getCloudflareContext } from "@opennextjs/cloudflare"
-import { ensureGscSchema } from "@/lib/gsc-schema"
-import { enqueueSyncForSite } from "@/lib/gsc-sync"
+import { enqueueSync } from "@/lib/gsc-service"
 
 export async function POST(request: Request) {
   const session = await auth(request)
@@ -9,28 +8,14 @@ export async function POST(request: Request) {
     return new Response("Unauthorized", { status: 401 })
   }
 
+  const { env } = await getCloudflareContext({ async: true })
   const body = (await request.json().catch(() => null)) as
     | { siteId?: string }
     | null
-
-  const siteId = body?.siteId?.trim()
-  if (!siteId) {
-    return new Response("Missing siteId", { status: 400 })
+  const siteId = body?.siteId?.trim() ?? null
+  const result = await enqueueSync(env, session.user.id, siteId)
+  if (!result.ok) {
+    return new Response(result.message, { status: result.status })
   }
-
-  const { env } = await getCloudflareContext({ async: true })
-  await ensureGscSchema(env)
-
-  const owner = await env.DB.prepare(
-    `SELECT id FROM gsc_sites WHERE id = ? AND owner_user_id = ?`,
-  )
-    .bind(siteId, session.user.id)
-    .first()
-
-  if (!owner) {
-    return new Response("Not found", { status: 404 })
-  }
-
-  const daysQueued = await enqueueSyncForSite(env, siteId)
-  return Response.json({ ok: true, siteId, daysQueued })
+  return Response.json(result.data)
 }

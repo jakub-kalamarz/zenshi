@@ -9,22 +9,22 @@ directory = ".open-next/assets"
 binding = "ASSETS"
 
 [vars]
-AUTH_URL = "https://your-domain.example"
+AUTH_URL = "https://zenshi.dev"
 AUTH_TRUST_HOST = "true"
 
 [[routes]]
-pattern = "your-domain.example"
+pattern = "zenshi.dev"
 custom_domain = true
 
 [[d1_databases]]
 binding = "DB"
-database_name = "your-d1-database-name"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_name = "zenshi"
+database_id = "df04cb3e-eab2-4abd-9189-66ef1f28de78"
 remote = true
 
 [[r2_buckets]]
 binding = "FAVICON_BUCKET"
-bucket_name = "your-favicon-bucket"
+bucket_name = "zenshi-favicons"
 
 [triggers]
 crons = ["0 2 * * *"]
