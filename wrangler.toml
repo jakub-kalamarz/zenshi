@@ -15,7 +15,7 @@ AUTH_TRUST_HOST = "true"
 NEXT_PUBLIC_SITE_URL = "https://zenshi.dev"
 
 [[routes]]
-pattern = "zenshi.dev/*"
+pattern = "zenshi.dev"
 custom_domain = true
 
 [[d1_databases]]
