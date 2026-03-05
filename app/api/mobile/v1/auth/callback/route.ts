@@ -1,7 +1,24 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
 import { ensureAuthSchema } from "@/lib/auth-schema"
+import { GoogleAccountConflictError, signInWithGoogle, upsertGoogleAccountForUser } from "@/lib/auth"
 import { consumeOauthState, createLoginCode } from "@/lib/mobile-auth"
-import { mobileError, handleMobileOptions, withMobileCors } from "@/lib/mobile-http"
+import { mobileError, mobileJson, handleMobileOptions, withMobileCors } from "@/lib/mobile-http"
+
+type TokenResponse = {
+  access_token: string
+  refresh_token?: string
+  expires_in: number
+  token_type?: string
+  scope?: string
+  id_token?: string
+}
+
+type UserInfoResponse = {
+  sub: string
+  email?: string
+  name?: string
+  picture?: string
+}
 
 function resolveAuthEnv(env: CloudflareEnv) {
   return {
@@ -24,98 +41,75 @@ function wantsJson(request: Request) {
   return accept.includes("application/json") || url.searchParams.get("format") === "json"
 }
 
-type TokenResponse = {
-  access_token: string
-  refresh_token?: string
-  expires_in: number
-  token_type?: string
-  scope?: string
-  id_token?: string
+function toHtmlResponse(html: string, request: Request, env: CloudflareEnv) {
+  const response = new Response(html, {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  })
+  return withMobileCors(response, request, env)
 }
 
-type UserInfoResponse = {
-  sub: string
-  email?: string
-  name?: string
-  picture?: string
-}
-
-async function upsertUserFromGoogle(
-  env: CloudflareEnv,
-  userInfo: UserInfoResponse,
-  tokenData: TokenResponse,
+function userViewFromGoogleOrDb(
+  fallbackUser: UserInfoResponse,
+  dbUser:
+    | {
+        id: string
+        email: string | null
+        name: string | null
+        image: string | null
+      }
+    | null,
 ) {
-  const now = Math.floor(Date.now() / 1000)
-  const expiresAt = now + tokenData.expires_in
+  return {
+    id: dbUser?.id ?? "",
+    email: dbUser?.email ?? fallbackUser.email ?? null,
+    name: dbUser?.name ?? fallbackUser.name ?? null,
+    image: dbUser?.image ?? fallbackUser.picture ?? null,
+  }
+}
 
-  const account = await env.DB.prepare(
-    `SELECT id, user_id
-     FROM auth_accounts
-     WHERE provider = 'google' AND provider_account_id = ?`,
-  )
-    .bind(userInfo.sub)
-    .first<{ id: string; user_id: string }>()
+async function exchangeGoogleCode(
+  env: CloudflareEnv,
+  code: string,
+  verifier: string,
+  redirectUri: string,
+) {
+  const resolved = resolveAuthEnv(env)
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: resolved.AUTH_GOOGLE_ID ?? "",
+      client_secret: resolved.AUTH_GOOGLE_SECRET ?? "",
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+    }),
+  })
 
-  let userId: string
-  if (account) {
-    userId = account.user_id
-  } else {
-    const existingUser = userInfo.email
-      ? await env.DB.prepare(
-        `SELECT id FROM auth_users WHERE email = ?`,
-      )
-        .bind(userInfo.email)
-        .first<{ id: string }>()
-      : null
-    userId = existingUser?.id ?? crypto.randomUUID()
-    if (!existingUser) {
-      await env.DB.prepare(
-        `INSERT INTO auth_users (id, email, name, image)
-         VALUES (?, ?, ?, ?)`,
-      )
-        .bind(userId, userInfo.email ?? null, userInfo.name ?? null, userInfo.picture ?? null)
-        .run()
-    }
-
-    await env.DB.prepare(
-      `INSERT INTO auth_accounts (
-         id, user_id, provider, provider_account_id,
-         access_token, refresh_token, token_type, scope, expires_at,
-         created_at, updated_at
-       ) VALUES (?, ?, 'google', ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
-    )
-      .bind(
-        crypto.randomUUID(),
-        userId,
-        userInfo.sub,
-        tokenData.access_token,
-        tokenData.refresh_token ?? null,
-        tokenData.token_type ?? null,
-        tokenData.scope ?? null,
-        expiresAt,
-      )
-      .run()
+  if (!tokenRes.ok) {
+    const text = await tokenRes.text()
+    throw new Error(`Token exchange failed: ${text}`)
   }
 
-  if (account) {
-    await env.DB.prepare(
-      `UPDATE auth_accounts
-       SET access_token = ?, refresh_token = COALESCE(?, refresh_token),
-           token_type = ?, scope = ?, expires_at = ?, updated_at = datetime('now')
-       WHERE id = ?`,
-    )
-      .bind(
-        tokenData.access_token,
-        tokenData.refresh_token ?? null,
-        tokenData.token_type ?? null,
-        tokenData.scope ?? null,
-        expiresAt,
-        account.id,
-      )
-      .run()
+  const tokenData = (await tokenRes.json()) as TokenResponse
+  if (!tokenData.access_token || !tokenData.expires_in) {
+    throw new Error("Invalid token response")
   }
 
-  return userId
+  return tokenData
+}
+
+async function fetchGoogleUser(accessToken: string) {
+  const userRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!userRes.ok) {
+    const text = await userRes.text()
+    throw new Error(`Userinfo failed: ${text}`)
+  }
+  return (await userRes.json()) as UserInfoResponse
 }
 
 export async function GET(request: Request) {
@@ -138,45 +132,77 @@ export async function GET(request: Request) {
     return mobileError("OAUTH_ERROR", "Missing code or state", request, env, 400)
   }
 
-  const verifier = await consumeOauthState(env, state)
-  if (!verifier) {
+  const stateData = await consumeOauthState(env, state)
+  if (!stateData) {
     return mobileError("OAUTH_ERROR", "Invalid or expired state", request, env, 400)
   }
 
   const requestOrigin = new URL(request.url).origin
   const baseOrigin = requestOrigin || env.AUTH_URL || "http://localhost:3000"
   const redirectUri = new URL("/api/mobile/v1/auth/callback", baseOrigin).toString()
-  const resolved = resolveAuthEnv(env)
 
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: resolved.AUTH_GOOGLE_ID ?? "",
-      client_secret: resolved.AUTH_GOOGLE_SECRET ?? "",
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-      code_verifier: verifier,
-    }),
-  })
-
-  if (!tokenRes.ok) {
-    const text = await tokenRes.text()
-    return mobileError("OAUTH_ERROR", `Token exchange failed: ${text}`, request, env, 400)
+  let tokenData: TokenResponse
+  try {
+    tokenData = await exchangeGoogleCode(env, code, stateData.verifier, redirectUri)
+  } catch (error_) {
+    const message = error_ instanceof Error ? error_.message : "Token exchange failed"
+    return mobileError("OAUTH_ERROR", message, request, env, 400)
   }
 
-  const tokenData = (await tokenRes.json()) as TokenResponse
-  const userRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
-    headers: { Authorization: `Bearer ${tokenData.access_token}` },
-  })
-  if (!userRes.ok) {
-    const text = await userRes.text()
-    return mobileError("OAUTH_ERROR", `Userinfo failed: ${text}`, request, env, 400)
+  let userInfo: UserInfoResponse
+  try {
+    userInfo = await fetchGoogleUser(tokenData.access_token)
+  } catch (error_) {
+    const message = error_ instanceof Error ? error_.message : "Userinfo failed"
+    return mobileError("OAUTH_ERROR", message, request, env, 400)
   }
 
-  const userInfo = (await userRes.json()) as UserInfoResponse
-  const userId = await upsertUserFromGoogle(env, userInfo, tokenData)
+  if (stateData.purpose === "link") {
+    if (!stateData.userId) {
+      return mobileError("OAUTH_ERROR", "Missing linked user", request, env, 400)
+    }
+
+    try {
+      await upsertGoogleAccountForUser(env, stateData.userId, userInfo, tokenData)
+    } catch (error_) {
+      if (error_ instanceof GoogleAccountConflictError) {
+        return mobileError("CONFLICT", error_.message, request, env, error_.status)
+      }
+      return mobileError("OAUTH_ERROR", "Failed to link Google account", request, env, 500)
+    }
+
+    const linkedDbUser = await env.DB.prepare(
+      `SELECT id, email, name, image FROM auth_users WHERE id = ?`,
+    )
+      .bind(stateData.userId)
+      .first<{ id: string; email: string | null; name: string | null; image: string | null }>()
+
+    const user = userViewFromGoogleOrDb(userInfo, linkedDbUser)
+
+    if (wantsJson(request)) {
+      return mobileJson({ linked: true, user }, request, env)
+    }
+
+    const scheme = (env as CloudflareEnv & { MOBILE_APP_SCHEME?: string }).MOBILE_APP_SCHEME || "zenshi"
+    const deepLink = `${scheme}://auth?linked=1`
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Google link complete</title>
+  </head>
+  <body>
+    <p>Google account linked. You can return to the app.</p>
+    <p><a href="${deepLink}">Open the app</a></p>
+  </body>
+</html>`
+
+    return toHtmlResponse(html, request, env)
+  }
+
+  const signedInUser = await signInWithGoogle(env, userInfo, tokenData)
+  const userId = signedInUser.id
   const loginCode = await createLoginCode(env, userId)
 
   const user = {
@@ -187,8 +213,7 @@ export async function GET(request: Request) {
   }
 
   if (wantsJson(request)) {
-    const response = Response.json({ ok: true, data: { code: loginCode, user } })
-    return withMobileCors(response, request, env)
+    return mobileJson({ code: loginCode, user }, request, env)
   }
 
   const scheme = (env as CloudflareEnv & { MOBILE_APP_SCHEME?: string }).MOBILE_APP_SCHEME || "zenshi"
@@ -206,9 +231,5 @@ export async function GET(request: Request) {
   </body>
 </html>`
 
-  const response = new Response(html, {
-    status: 200,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  })
-  return withMobileCors(response, request, env)
+  return toHtmlResponse(html, request, env)
 }

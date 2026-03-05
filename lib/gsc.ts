@@ -10,6 +10,15 @@ type GoogleAccount = {
   expires_at: number | null
 }
 
+export class MissingGoogleAccountError extends Error {
+  public readonly status = 403
+  public readonly code = "MISSING_GOOGLE_ACCOUNT"
+
+  constructor(message = "Google account is not linked. Please connect Google account first.") {
+    super(message)
+  }
+}
+
 export async function getUserGoogleAccount(
   env: CloudflareEnv,
   userId: string,
@@ -45,7 +54,7 @@ export async function getAccessToken(
 
   const account = await getUserGoogleAccount(env, userId)
   if (!account) {
-    throw new Error("Missing Google account")
+    throw new MissingGoogleAccountError()
   }
 
   const expiresAtMs = account.expires_at ? Number(account.expires_at) * 1000 : null

@@ -69,6 +69,21 @@ components:
       properties:
         authUrl:
           type: string
+    EmailPasswordAuthRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        name:
+          type: string
+          nullable: true
+        label:
+          type: string
+          nullable: true
     AuthExchangeRequest:
       type: object
       required: [code]
@@ -89,6 +104,27 @@ components:
         expiresAt:
           type: string
           nullable: true
+        user:
+          $ref: "#/components/schemas/User"
+    AuthCredentialsResponse:
+      type: object
+      required: [token, tokenId, user]
+      properties:
+        token:
+          type: string
+        tokenId:
+          type: string
+        expiresAt:
+          type: string
+          nullable: true
+        user:
+          $ref: "#/components/schemas/User"
+    GoogleLinkResult:
+      type: object
+      required: [linked, user]
+      properties:
+        linked:
+          type: boolean
         user:
           $ref: "#/components/schemas/User"
     MobileSessionData:
@@ -365,6 +401,153 @@ paths:
                         $ref: "#/components/schemas/AuthStartData"
         "400":
           description: Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/mobile/v1/auth/register:
+    post:
+      tags: [Mobile Auth]
+      summary: Register with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/EmailPasswordAuthRequest"
+                - type: object
+                  required: [email, password]
+                  properties:
+                    name:
+                      type: string
+                      nullable: true
+      responses:
+        "201":
+          description: Registration succeeded and token returned
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AuthCredentialsResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/mobile/v1/auth/login:
+    post:
+      tags: [Mobile Auth]
+      summary: Login with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailPasswordAuthRequest"
+      responses:
+        "200":
+          description: Login succeeded and token returned
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AuthCredentialsResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/mobile/v1/auth/link/start:
+    get:
+      tags: [Mobile Auth]
+      summary: Start Google link flow with existing mobile session
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OAuth URL
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AuthStartData"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /api/mobile/v1/auth/link/callback:
+    get:
+      tags: [Mobile Auth]
+      summary: Mobile OAuth callback for linking Google account
+      parameters:
+        - in: query
+          name: code
+          schema:
+            type: string
+        - in: query
+          name: state
+          schema:
+            type: string
+        - in: query
+          name: error
+          schema:
+            type: string
+      responses:
+        "200":
+          description: HTML or JSON response with link result
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/GoogleLinkResult"
+        "400":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: Google account is linked to another user
           content:
             application/json:
               schema:

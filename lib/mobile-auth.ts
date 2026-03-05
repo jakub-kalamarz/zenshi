@@ -5,6 +5,15 @@ type MobileEnv = CloudflareEnv & {
   MOBILE_LOGIN_CODE_TTL_MINUTES?: string
 }
 
+export type MobileOAuthPurpose = "signin" | "link"
+
+export type MobileOauthState = {
+  state: string
+  verifier: string
+  purpose: MobileOAuthPurpose
+  userId: string | null
+}
+
 export type MobileAuthUser = {
   id: string
   email: string | null
@@ -56,6 +65,10 @@ function parseBearerToken(request: Request) {
   const [scheme, value] = header.split(" ")
   if (scheme?.toLowerCase() !== "bearer") return null
   return value?.trim() || null
+}
+
+function normalizePurpose(raw: string | null | undefined): MobileOAuthPurpose {
+  return raw === "link" ? "link" : "signin"
 }
 
 export async function issueApiToken(
@@ -194,15 +207,29 @@ export async function exchangeLoginCode(env: MobileEnv, code: string) {
   return row.user_id
 }
 
-export async function createOauthState(env: MobileEnv, verifier: string, ttlMinutes = 15) {
+export async function createOauthState(
+  env: MobileEnv,
+  verifier: string,
+  ttlMinutes = 15,
+  options: {
+    purpose?: MobileOAuthPurpose
+    userId?: string | null
+  } = {},
+) {
   await ensureAuthSchema(env)
   const state = randomToken(16)
   const expiresAt = nowSeconds() + ttlMinutes * 60
   await env.DB.prepare(
-    `INSERT INTO mobile_oauth_states (state, verifier, expires_at)
-     VALUES (?, ?, ?)`,
+    `INSERT INTO mobile_oauth_states (state, verifier, purpose, user_id, expires_at)
+     VALUES (?, ?, ?, ?, ?)`,
   )
-    .bind(state, verifier, expiresAt)
+    .bind(
+      state,
+      verifier,
+      options.purpose ?? "signin",
+      options.userId ?? null,
+      expiresAt,
+    )
     .run()
   return state
 }
@@ -210,12 +237,12 @@ export async function createOauthState(env: MobileEnv, verifier: string, ttlMinu
 export async function consumeOauthState(env: MobileEnv, state: string) {
   await ensureAuthSchema(env)
   const row = await env.DB.prepare(
-    `SELECT verifier, expires_at
+    `SELECT verifier, purpose, user_id, expires_at
      FROM mobile_oauth_states
      WHERE state = ?`,
   )
     .bind(state)
-    .first<{ verifier: string; expires_at: number }>()
+    .first<{ verifier: string; purpose: string; user_id: string | null; expires_at: number }>()
 
   if (!row) return null
   if (row.expires_at < nowSeconds()) return null
@@ -226,5 +253,9 @@ export async function consumeOauthState(env: MobileEnv, state: string) {
     .bind(state)
     .run()
 
-  return row.verifier
+  return {
+    verifier: row.verifier,
+    purpose: normalizePurpose(row.purpose),
+    userId: row.user_id,
+  }
 }

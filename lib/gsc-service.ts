@@ -1,5 +1,9 @@
 import { ensureGscSchema } from "@/lib/gsc-schema"
-import { listUserGscSites, normalizeGscSiteUrl } from "@/lib/gsc"
+import {
+  listUserGscSites,
+  MissingGoogleAccountError,
+  normalizeGscSiteUrl,
+} from "@/lib/gsc"
 import { enqueueDailySync, enqueueSyncForSite } from "@/lib/gsc-sync"
 import {
   buildBucketExpression,
@@ -37,6 +41,15 @@ function ok<T>(data: T): ServiceResult<T> {
 
 function err(status: number, message: string): ServiceResult<never> {
   return { ok: false, status, message }
+}
+
+function mapGscError(error: unknown): ServiceResult<never> {
+  if (error instanceof MissingGoogleAccountError) {
+    return err(error.status, error.message)
+  }
+
+  const message = error instanceof Error ? error.message : "GSC request failed"
+  return err(500, message)
 }
 
 type PageMetricsRow = {
@@ -130,8 +143,14 @@ export async function listSites(
   await ensureGscSchema(env)
   let existing = await fetchSiteRows(env, userId)
 
-  if (refresh || (existing.results?.length ?? 0) === 0) {
-    const remoteSites = await listUserGscSites(env, userId)
+    if (refresh || (existing.results?.length ?? 0) === 0) {
+    let remoteSites: { siteUrl: string; permissionLevel: string }[]
+    try {
+      remoteSites = await listUserGscSites(env, userId)
+    } catch (error) {
+      return mapGscError(error)
+    }
+
     for (const site of remoteSites) {
       const normalized = normalizeGscSiteUrl(site.siteUrl)
       if (!normalized) continue
@@ -159,7 +178,13 @@ export async function createSite(
 ): Promise<ServiceResult<{ id: string; siteUrl: string }>> {
   if (!siteUrl) return err(400, "Missing siteUrl")
   await ensureGscSchema(env)
-  const availableSites = await listUserGscSites(env, userId)
+  let availableSites: { siteUrl: string; permissionLevel: string }[]
+  try {
+    availableSites = await listUserGscSites(env, userId)
+  } catch (error) {
+    return mapGscError(error)
+  }
+
   const normalized = normalizeGscSiteUrl(siteUrl)
   if (!normalized) return err(400, "Invalid siteUrl")
 

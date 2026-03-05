@@ -4,6 +4,9 @@ const schemaStatements = [
     email TEXT,
     name TEXT,
     image TEXT,
+    password_hash TEXT,
+    password_salt TEXT,
+    password_updated_at DATETIME,
     created_at DATETIME NOT NULL DEFAULT (datetime('now'))
   );`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_email
@@ -63,7 +66,9 @@ const schemaStatements = [
     state TEXT PRIMARY KEY,
     verifier TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
-    expires_at INTEGER NOT NULL
+    expires_at INTEGER NOT NULL,
+    purpose TEXT NOT NULL DEFAULT 'signin',
+    user_id TEXT
   );`,
 ];
 
