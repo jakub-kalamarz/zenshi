@@ -1,62 +1,41 @@
-# GSC Sync Worker (Cloudflare)
+# Repository Guidelines
 
-## Goal
-Single Cloudflare Worker deployment serves Next.js UI/API and runs Google Search Console (GSC) data sync. Sync can run in **queue mode** (preferred) or **direct mode** (fallback).
+## Project Structure & Module Organization
+Zenshi is a Next.js 16 app deployed to Cloudflare Workers via OpenNext.
+- `app/`: App Router routes, API handlers (`app/api/*`), auth, sync pages, and locale-aware routes under `app/[locale]`.
+- `components/`: Shared UI and feature components (`ui`, `gsc`, `share`, `kibo-ui`).
+- `lib/`: Core business logic and helpers (auth, GSC processing, credentials), plus lightweight spec files.
+- `i18n/` and `messages/`: Internationalization config and translation JSON files.
+- `migrations/`: Cloudflare D1 SQL migrations.
+- `docs/`: Project documentation and screenshots.
 
-## Modes
+## Build, Test, and Development Commands
+Use `pnpm` with Node.js 20+.
+- `pnpm install`: Install dependencies.
+- `pnpm dev`: Run local Next.js development server.
+- `pnpm lint`: Run ESLint (Next core-web-vitals + TypeScript rules).
+- `pnpm build`: Build production Next.js app.
+- `pnpm preview`: Build and preview Cloudflare/OpenNext output.
+- `pnpm deploy`: Build and deploy to Cloudflare.
+- `pnpm cf-typegen`: Regenerate `cloudflare-env.d.ts` from Wrangler bindings.
 
-### 1) Queue mode (preferred)
-- **Cron**: `0 2 * * *` (UTC) triggers daily sync.
-- **Producer**: `enqueueDailySync(env)` loads active sites and enqueues `{ siteId, date }` into `gsc-sync`.
-- **Consumer**: `queue()` processes batches and calls `processSyncMessage()`.
-- **Processing**:
-  - fetch GSC data for `page + device` per day
-  - paginate `rowLimit=25k`, max 2 pages
-  - upsert into `gsc_pages_daily`
-  - update `gsc_sync_state`, insert into `gsc_sync_log`
+## Coding Style & Naming Conventions
+- Language: TypeScript (`strict: true`) with React 19 function components.
+- Imports: Prefer alias paths like `@/lib/...` where appropriate.
+- Naming: Components in `PascalCase`, variables/functions in `camelCase`, route folders in lowercase.
+- Files: Use descriptive names by domain (example: `lib/gsc-master-chart.ts`).
+- Formatting/linting: Follow `eslint.config.mjs`; fix all lint warnings before opening a PR.
 
-### 2) Direct mode (fallback)
-- **Cron**: `0 2 * * *` (UTC).
-- **Cron handler** calls `runDailySyncDirect(env)` which iterates active sites and runs `processSyncMessage()` without queues.
-- Use when Queues are not active in API or block deploy.
+## Testing Guidelines
+Current CI enforces `pnpm lint` and `pnpm build` on push/PR. Keep both green locally before submitting.
+- Place logic tests as `*.spec.ts` near related code (current pattern in `lib/`).
+- Prefer deterministic tests with no external network calls.
+- If adding a new test runner/script, document it in `README.md` and `package.json`.
 
-## Switching modes
+## Commit & Pull Request Guidelines
+- Branch naming: `feature/*`, `fix/*`, `chore/*`, `docs/*`.
+- Commits: small, focused, imperative subject (example: `Fix Scalar API docs config`).
+- PRs target `main` and should include: purpose, testing notes (`pnpm lint`, `pnpm build`), linked issue(s), and screenshots for UI changes.
 
-### Enable Queue mode
-1. Create queue:
-   ```bash
-   npx wrangler queues create gsc-sync --message-retention-period-secs=86400
-   ```
-2. Enable queues in `wrangler.toml`:
-   ```toml
-   [queues]
-   producers = [{ queue = "gsc-sync", binding = "GSC_SYNC_QUEUE" }]
-   consumers = [{ queue = "gsc-sync", max_batch_size = 5, max_batch_timeout = 5, max_retries = 3 }]
-   ```
-3. In `custom-worker.ts`:
-   ```ts
-   ctx.waitUntil(enqueueDailySync(env))
-   ```
-4. Deploy:
-   ```bash
-   pnpm opennextjs-cloudflare deploy
-   ```
-
-### Enable Direct mode
-1. Remove `queues` section from `wrangler.toml`.
-2. In `custom-worker.ts`:
-   ```ts
-   ctx.waitUntil(runDailySyncDirect(env))
-   ```
-3. Deploy:
-   ```bash
-   pnpm opennextjs-cloudflare deploy
-   ```
-
-## Key files
-- `custom-worker.ts` – Worker entry (`fetch`, `scheduled`, `queue`).
-- `lib/gsc.ts` – OAuth refresh + GSC API calls.
-- `lib/gsc-sync.ts` – sync logic + D1 upserts.
-- `migrations/0001_gsc.sql` – D1 schema.
-- `wrangler.toml` – bindings (D1, assets, queues, cron).
-
+## Security & Configuration Tips
+Never commit secrets. Start from `.env.example` and `wrangler.toml.example`, and review `SECURITY.md` before reporting vulnerabilities.
