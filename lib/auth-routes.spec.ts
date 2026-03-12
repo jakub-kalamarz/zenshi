@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { mock } from "bun:test"
 import { hashPassword } from "./credentials"
 import { createFakeDb } from "./_test-fake-db"
+import { issueApiToken } from "./mobile-auth"
 
 let currentEnv: { DB: ReturnType<typeof createFakeDb> }
 
@@ -15,17 +16,28 @@ const webRegisterModule = await import("../app/api/auth/register/route")
 const webLoginModule = await import("../app/api/auth/login/route")
 const mobileRegisterModule = await import("../app/api/mobile/v1/auth/register/route")
 const mobileLoginModule = await import("../app/api/mobile/v1/auth/login/route")
+const mobileDisconnectModule = await import("../app/api/mobile/v1/auth/link/disconnect/route")
 
 const webRegister = webRegisterModule.POST
 const webLogin = webLoginModule.POST
 const mobileRegister = mobileRegisterModule.POST
 const mobileLogin = mobileLoginModule.POST
+const mobileDisconnect = mobileDisconnectModule.POST
 
 function makeJsonRequest(path: string, body: unknown) {
   return new Request(`http://localhost${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+  })
+}
+
+function makeAuthedRequest(path: string) {
+  return new Request(`http://localhost${path}`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer mobile-token",
+    },
   })
 }
 
@@ -163,7 +175,100 @@ function makeJsonRequest(path: string, body: unknown) {
     error: { code: string }
   }
   assert.equal(payload.ok, false)
-  assert.equal(payload.error.code, "UNAUTHORIZED")
+  assert.equal(payload.error.code, "INVALID_CREDENTIALS")
+}
+
+{
+  const credentials = await hashPassword("secret1234")
+  currentEnv = {
+    DB: createFakeDb({
+      auth_users: [
+        {
+          id: "user-1",
+          email: "user@example.com",
+          name: "User",
+          image: null,
+          password_hash: credentials.password_hash,
+          password_salt: credentials.password_salt,
+          password_updated_at: null,
+        },
+      ],
+      auth_accounts: [
+        {
+          id: "account-1",
+          user_id: "user-1",
+          provider: "google",
+          provider_account_id: "google-sub-1",
+          access_token: "token-1",
+          refresh_token: "refresh-1",
+          expires_at: 3600,
+        },
+      ],
+    }),
+  }
+  const token = await issueApiToken(currentEnv, "user-1", "phone")
+
+  const response = await mobileDisconnect(
+    new Request("http://localhost/api/mobile/v1/auth/link/disconnect", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token.token}`,
+      },
+    }),
+  )
+  assert.equal(response.status, 200)
+  const payload = (await response.json()) as {
+    ok: boolean
+    data: { googleAccount: null }
+  }
+  assert.equal(payload.ok, true)
+  assert.equal(payload.data.googleAccount, null)
+}
+
+{
+  currentEnv = {
+    DB: createFakeDb({
+      auth_users: [
+        {
+          id: "user-1",
+          email: "user@example.com",
+          name: "User",
+          image: null,
+          password_hash: null,
+          password_salt: null,
+          password_updated_at: null,
+        },
+      ],
+      auth_accounts: [
+        {
+          id: "account-1",
+          user_id: "user-1",
+          provider: "google",
+          provider_account_id: "google-sub-1",
+          access_token: "token-1",
+          refresh_token: "refresh-1",
+          expires_at: 3600,
+        },
+      ],
+    }),
+  }
+  const token = await issueApiToken(currentEnv, "user-1", "phone")
+
+  const response = await mobileDisconnect(
+    new Request("http://localhost/api/mobile/v1/auth/link/disconnect", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token.token}`,
+      },
+    }),
+  )
+  assert.equal(response.status, 400)
+  const payload = (await response.json()) as {
+    ok: boolean
+    error: { code: string }
+  }
+  assert.equal(payload.ok, false)
+  assert.equal(payload.error.code, "VALIDATION_ERROR")
 }
 
 console.log("auth-routes spec passed")

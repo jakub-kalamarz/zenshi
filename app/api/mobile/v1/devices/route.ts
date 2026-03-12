@@ -1,7 +1,7 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
 import { requireMobileSession } from "@/lib/mobile-auth"
 import { mobileError, mobileFromService, handleMobileOptions } from "@/lib/mobile-http"
-import { getSiteCardData } from "@/lib/gsc-service"
+import { getDevicesData } from "@/lib/gsc-service"
 
 export async function GET(request: Request) {
   const { env } = await getCloudflareContext({ async: true })
@@ -14,13 +14,14 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url)
-  const result = await getSiteCardData(env, session.user.id, {
+  const result = await getDevicesData(env, session.user.id, {
     siteId: searchParams.get("siteId"),
     start: searchParams.get("start"),
     end: searchParams.get("end"),
     compareStart: searchParams.get("compareStart"),
     compareEnd: searchParams.get("compareEnd"),
     granularity: searchParams.get("granularity"),
+    limit: Number(searchParams.get("limit") || 200),
   })
   return mobileFromService(result, request, env)
 }

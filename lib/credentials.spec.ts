@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import {
+  credentialsConfig,
   hashPassword,
   validateCredentials,
   verifyPassword,
@@ -44,6 +45,6 @@ assert.equal(correct, true)
 assert.equal(wrong, false)
 
 assert.equal(await verifyPassword("secret-pass", "invalid", hash.password_salt), false)
+assert.equal(credentialsConfig.pbkdf2Iterations, 100_000)
 
 console.log("credentials spec passed")
-

@@ -8,6 +8,7 @@ import { SiteFavicon } from "@/components/site-favicon"
 import { displaySiteName } from "@/components/gsc/date-utils"
 import {
   ArrowsClockwise,
+  ArrowSquareOut,
   CalendarBlank,
   CheckCircle,
   Clock,
@@ -16,7 +17,27 @@ import {
   XCircle,
 } from "@phosphor-icons/react"
 
-type SyncStatus = {
+export type SyncRun = {
+  runId: string
+  state: string
+  progressPercent: number
+  processedUnits: number
+  totalUnits: number
+  unitLabel: string
+  currentUnit: string | null
+  dataFreshThrough: string | null
+  etaSeconds: number | null
+  startedAt: string | null
+  lastProgressAt: string | null
+  finishedAt: string | null
+  queuePosition: number | null
+  queueDelaySeconds: number | null
+  stallState: "normal" | "delayed" | "stalled"
+  stallReason: string | null
+  errorMessage: string | null
+}
+
+export type SyncStatus = {
   siteId: string
   siteUrl: string
   lastSyncedDate: string | null
@@ -36,6 +57,11 @@ type SyncStatus = {
   syncedDays: number
   remainingDays: number
   syncProgressPct: number
+  activeRun: SyncRun | null
+  lastCompletedRun: SyncRun | null
+  lastSuccessfulDataFreshThrough: string | null
+  lastVisibleDataUpdatedAt: string | null
+  healthSummary: "healthy" | "delayed" | "stalled" | "partial" | "error"
 }
 
 function relativeTime(
@@ -76,66 +102,119 @@ function formatShortDate(dateStr: string, locale: string): string {
   })
 }
 
-function StatusLine({
-  site,
-  locale,
-}: {
-  site: SyncStatus
-  locale: string
-}) {
-  const t = useTranslations("syncPage")
+export function buildSyncDashboardSummary(statuses: SyncStatus[]) {
+  const freshestDate = statuses
+    .map((status) => status.activeRun?.dataFreshThrough ?? status.lastSuccessfulDataFreshThrough)
+    .filter((date): date is string => Boolean(date))
+    .sort()
+    .at(-1) ?? null
 
-  if (site.isSyncing) {
-    return (
-      <span className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
-        <ArrowsClockwise className="size-4 animate-spin" />
-        {t("syncInProgress", { percent: site.syncProgressPct })}
-      </span>
-    )
+  return {
+    activeCount: statuses.filter((status) => status.activeRun !== null).length,
+    queuedCount: statuses.filter((status) => status.activeRun?.state === "queued").length,
+    attentionCount: statuses.filter((status) => ["error", "partial", "delayed", "stalled"].includes(status.healthSummary)).length,
+    freshestDate,
   }
-  if (site.status === "error") {
-    return (
-      <span className="flex items-center gap-1.5 text-destructive">
-        <XCircle className="size-4 shrink-0" weight="fill" />
-        <span className="truncate">{site.errorMessage ?? t("syncFailed")}</span>
-      </span>
-    )
+}
+
+export function describeSyncCardState(site: SyncStatus): {
+  tone: "active" | "success" | "warning" | "error" | "muted"
+  primaryKey: "syncing" | "queued" | "stalled" | "delayed" | "error" | "partial" | "freshness" | "never"
+  secondaryKey: "eta" | "queue" | "freshness" | "none"
+} {
+  if (site.activeRun) {
+    if (site.activeRun.state === "queued") {
+      return { tone: "muted", primaryKey: "queued", secondaryKey: "queue" }
+    }
+    if (site.activeRun.stallState === "stalled") {
+      return { tone: "warning", primaryKey: "stalled", secondaryKey: "freshness" }
+    }
+    if (site.activeRun.stallState === "delayed") {
+      return { tone: "warning", primaryKey: "delayed", secondaryKey: "eta" }
+    }
+    return { tone: "active", primaryKey: "syncing", secondaryKey: site.activeRun.etaSeconds ? "eta" : "freshness" }
   }
-  if (site.status === "truncated") {
-    return (
-      <span className="flex items-center gap-1.5 text-yellow-600 dark:text-yellow-400">
-        <Warning className="size-4 shrink-0" weight="fill" />
-        {t("truncated")}
-      </span>
-    )
+  if (site.lastCompletedRun?.state === "error" || site.status === "error") {
+    return { tone: "error", primaryKey: "error", secondaryKey: "freshness" }
   }
-  if (site.backfillCursorDate !== null && site.datesSynced > 0) {
-    return (
-      <span className="flex items-center gap-1.5 text-yellow-600 dark:text-yellow-400">
-        <Warning className="size-4 shrink-0" weight="fill" />
-        {t("backfillingFrom", { date: formatShortDate(site.backfillCursorDate, locale) })}
-      </span>
-    )
+  if (site.lastCompletedRun?.state === "partial" || site.status === "truncated") {
+    return { tone: "warning", primaryKey: "partial", secondaryKey: "freshness" }
   }
-  if (site.status === "ok" || site.datesSynced > 0) {
-    return (
-      <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400">
-        <CheckCircle className="size-4 shrink-0" weight="fill" />
-        {t("synced")}{" "}
-        {relativeTime(site.updatedAt, locale, {
-          never: t("never"),
-          justNow: t("justNow"),
-          yesterday: t("yesterday"),
-        })}
-      </span>
-    )
+  if (site.lastSuccessfulDataFreshThrough) {
+    return { tone: "success", primaryKey: "freshness", secondaryKey: "none" }
   }
-  return (
-    <span className="flex items-center gap-1.5 text-muted-foreground">
-      <Clock className="size-4 shrink-0" />
-      {t("never")}
-    </span>
-  )
+  return { tone: "muted", primaryKey: "never", secondaryKey: "none" }
+}
+
+function toneClass(tone: ReturnType<typeof describeSyncCardState>["tone"]) {
+  switch (tone) {
+    case "active":
+      return "text-blue-600 dark:text-blue-400"
+    case "success":
+      return "text-green-600 dark:text-green-400"
+    case "warning":
+      return "text-yellow-600 dark:text-yellow-400"
+    case "error":
+      return "text-destructive"
+    default:
+      return "text-muted-foreground"
+  }
+}
+
+function formatEta(etaSeconds: number) {
+  if (etaSeconds < 60) return `${etaSeconds}s`
+  const minutes = Math.round(etaSeconds / 60)
+  return `${minutes}m`
+}
+
+function renderPrimaryLine(site: SyncStatus, locale: string, t: ReturnType<typeof useTranslations<"syncPage">>) {
+  const description = describeSyncCardState(site)
+  switch (description.primaryKey) {
+    case "syncing":
+      return t("syncInProgress", { percent: site.activeRun?.progressPercent ?? site.syncProgressPct })
+    case "queued":
+      return t("queued")
+    case "stalled":
+      return t("stalled")
+    case "delayed":
+      return t("delayed")
+    case "error":
+      return site.lastCompletedRun?.errorMessage ?? site.errorMessage ?? t("syncFailed")
+    case "partial":
+      return t("partial")
+    case "freshness":
+      return t("dataFreshThrough", {
+        date: formatShortDate(site.lastSuccessfulDataFreshThrough ?? site.lastSyncedDate ?? site.maxDate ?? site.retentionStart, locale),
+      })
+    default:
+      return t("never")
+  }
+}
+
+function renderSecondaryLine(site: SyncStatus, locale: string, t: ReturnType<typeof useTranslations<"syncPage">>) {
+  const description = describeSyncCardState(site)
+  switch (description.secondaryKey) {
+    case "eta":
+      return site.activeRun?.etaSeconds
+        ? t("eta", { value: formatEta(site.activeRun.etaSeconds) })
+        : t("dataFreshThrough", {
+            date: formatShortDate(site.activeRun?.dataFreshThrough ?? site.lastSuccessfulDataFreshThrough ?? site.retentionStart, locale),
+          })
+    case "queue":
+      return t("queuePosition", { position: site.activeRun?.queuePosition ?? 1 })
+    case "freshness":
+      return t("dataFreshThrough", {
+        date: formatShortDate(
+          site.activeRun?.dataFreshThrough ??
+            site.lastCompletedRun?.dataFreshThrough ??
+            site.lastSuccessfulDataFreshThrough ??
+            site.retentionStart,
+          locale,
+        ),
+      })
+    default:
+      return null
+  }
 }
 
 function ProgressBar({
@@ -169,6 +248,7 @@ export function SyncDashboard() {
   const [syncingAll, setSyncingAll] = useState(false)
   const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const summary = buildSyncDashboardSummary(statuses)
 
   const fetchStatuses = useCallback(async () => {
     try {
@@ -291,10 +371,34 @@ export function SyncDashboard() {
         </div>
       )}
       {!loading && statuses.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+              <div className="text-xs text-muted-foreground">{t("summaryActive")}</div>
+              <div className="text-lg font-semibold">{summary.activeCount}</div>
+            </div>
+            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+              <div className="text-xs text-muted-foreground">{t("summaryQueued")}</div>
+              <div className="text-lg font-semibold">{summary.queuedCount}</div>
+            </div>
+            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+              <div className="text-xs text-muted-foreground">{t("summaryAttention")}</div>
+              <div className="text-lg font-semibold">{summary.attentionCount}</div>
+            </div>
+            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+              <div className="text-xs text-muted-foreground">{t("summaryFreshest")}</div>
+              <div className="text-sm font-semibold">
+                {summary.freshestDate ? formatShortDate(summary.freshestDate, locale) : t("never")}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {statuses.map((site) => {
             const isSyncingLocal = syncingIds.has(site.siteId)
-            const hasError = site.status === "error"
+            const hasError = site.status === "error" || site.lastCompletedRun?.state === "error"
+            const description = describeSyncCardState(site)
+            const progressPercent = site.activeRun?.progressPercent ?? site.syncProgressPct
             return (
               <div
                 key={site.siteId}
@@ -306,8 +410,21 @@ export function SyncDashboard() {
                     <span className="truncate text-sm font-medium">
                       {displaySiteName(site.siteUrl)}
                     </span>
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-                      <StatusLine site={site} locale={locale} />
+                    <div className={`flex items-center gap-1.5 text-xs ${toneClass(description.tone)}`}>
+                      {description.tone === "active" && <ArrowsClockwise className="size-4 animate-spin" />}
+                      {description.tone === "success" && <CheckCircle className="size-4 shrink-0" weight="fill" />}
+                      {description.tone === "warning" && <Warning className="size-4 shrink-0" weight="fill" />}
+                      {description.tone === "error" && <XCircle className="size-4 shrink-0" weight="fill" />}
+                      {description.tone === "muted" && <Clock className="size-4 shrink-0" />}
+                      <span className="truncate">{renderPrimaryLine(site, locale, t)}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      {renderSecondaryLine(site, locale, t) && (
+                        <span className="flex items-center gap-1.5">
+                          <ArrowSquareOut className="size-3.5 shrink-0" />
+                          {renderSecondaryLine(site, locale, t)}
+                        </span>
+                      )}
                       {site.minDate && site.maxDate && (
                         <span className="flex items-center gap-1.5 text-muted-foreground">
                           <CalendarBlank className="size-3.5 shrink-0" />
@@ -328,17 +445,17 @@ export function SyncDashboard() {
                   </Button>
                 </div>
 
-                <div className="flex flex-col gap-2 text-xs">
+                  <div className="flex flex-col gap-2 text-xs">
                   <div className="flex items-center justify-between text-muted-foreground">
                     <span>{t("progressLabel")}</span>
                     <span className="font-medium text-foreground">
-                      {site.syncProgressPct}%
+                      {progressPercent}%
                     </span>
                   </div>
-                  <ProgressBar percent={site.syncProgressPct} isErrored={hasError} />
+                  <ProgressBar percent={progressPercent} isErrored={hasError} />
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
-                    <span>{t("progressDays", { synced: site.syncedDays, total: site.expectedDays })}</span>
-                    <span>{t("remainingDays", { days: site.remainingDays })}</span>
+                    <span>{t("progressDays", { synced: site.activeRun?.processedUnits ?? site.syncedDays, total: site.activeRun?.totalUnits ?? site.expectedDays })}</span>
+                    <span>{t("remainingDays", { days: Math.max(0, (site.activeRun?.totalUnits ?? site.expectedDays) - (site.activeRun?.processedUnits ?? site.syncedDays)) })}</span>
                   </div>
                   <span className="text-muted-foreground">
                     {t("retentionWindow", {
@@ -350,6 +467,7 @@ export function SyncDashboard() {
               </div>
             )
           })}
+          </div>
         </div>
       )}
     </div>

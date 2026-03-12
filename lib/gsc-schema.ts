@@ -62,6 +62,19 @@ const schemaStatements = [
     backfill_cursor_date TEXT,
     status TEXT NOT NULL DEFAULT 'ok',
     error_message TEXT,
+    active_run_id TEXT,
+    active_run_state TEXT,
+    active_run_started_at DATETIME,
+    active_run_last_progress_at DATETIME,
+    active_run_finished_at DATETIME,
+    active_run_total_units INTEGER,
+    active_run_processed_units INTEGER,
+    active_run_warning_count INTEGER,
+    active_run_error_count INTEGER,
+    active_run_queue_position INTEGER,
+    active_run_queue_delay_seconds INTEGER,
+    active_run_data_fresh_through TEXT,
+    active_run_current_unit TEXT,
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
   );`,
   `CREATE TABLE IF NOT EXISTS gsc_sync_log (
@@ -146,6 +159,21 @@ const schemaStatements = [
 ]
 
 let didEnsure = false
+const SYNC_STATE_COLUMNS: Record<string, string> = {
+  active_run_id: "TEXT",
+  active_run_state: "TEXT",
+  active_run_started_at: "DATETIME",
+  active_run_last_progress_at: "DATETIME",
+  active_run_finished_at: "DATETIME",
+  active_run_total_units: "INTEGER",
+  active_run_processed_units: "INTEGER",
+  active_run_warning_count: "INTEGER",
+  active_run_error_count: "INTEGER",
+  active_run_queue_position: "INTEGER",
+  active_run_queue_delay_seconds: "INTEGER",
+  active_run_data_fresh_through: "TEXT",
+  active_run_current_unit: "TEXT",
+}
 const REQUIRED_TABLES = [
   "gsc_sites",
   "gsc_pages_daily",
@@ -176,6 +204,7 @@ export async function ensureGscSchema(env: CloudflareEnv) {
       .first()
     const count = Number(tableCheck?.count ?? 0)
     if (count === REQUIRED_TABLES.length) {
+      await ensureSyncStateColumns(env)
       didEnsure = true
       return
     }
@@ -185,5 +214,26 @@ export async function ensureGscSchema(env: CloudflareEnv) {
 
   const batch = schemaStatements.map((sql) => env.DB.prepare(sql))
   await env.DB.batch(batch)
+  await ensureSyncStateColumns(env)
   didEnsure = true
+}
+
+async function ensureSyncStateColumns(env: CloudflareEnv) {
+  try {
+    const result = await env.DB.prepare("PRAGMA table_info(gsc_sync_state)").all<{
+      name: string
+    }>()
+    const existing = new Set((result.results ?? []).map((column) => column.name))
+    const missingStatements = Object.entries(SYNC_STATE_COLUMNS)
+      .filter(([name]) => !existing.has(name))
+      .map(([name, type]) =>
+        env.DB.prepare(`ALTER TABLE gsc_sync_state ADD COLUMN ${name} ${type}`),
+      )
+
+    if (missingStatements.length > 0) {
+      await env.DB.batch(missingStatements)
+    }
+  } catch {
+    // Ignore schema introspection errors so read paths can proceed on fresh installs.
+  }
 }

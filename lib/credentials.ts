@@ -1,6 +1,6 @@
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MIN_PASSWORD_LENGTH = 8
-const PBKDF2_ITERATIONS = 120_000
+const PBKDF2_ITERATIONS = 100_000
 const HASH_BYTES = 32
 const SALT_BYTES = 16
 

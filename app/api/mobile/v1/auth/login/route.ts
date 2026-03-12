@@ -1,5 +1,5 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
-import { issueApiToken } from "@/lib/mobile-auth"
+import { buildMobileSession, issueApiToken } from "@/lib/mobile-auth"
 import { mobileError, mobileJson, handleMobileOptions } from "@/lib/mobile-http"
 import { ensureAuthSchema } from "@/lib/auth-schema"
 import { validateCredentials, verifyPassword } from "@/lib/credentials"
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       password_salt: string | null
     }>()
   if (!user) {
-    return mobileError("UNAUTHORIZED", "Invalid credentials", request, env, 401)
+    return mobileError("INVALID_CREDENTIALS", "Invalid credentials", request, env, 401)
   }
 
   const isValidPassword = await verifyPassword(
@@ -53,21 +53,25 @@ export async function POST(request: Request) {
     user.password_salt,
   )
   if (!isValidPassword) {
-    return mobileError("UNAUTHORIZED", "Invalid credentials", request, env, 401)
+    return mobileError("INVALID_CREDENTIALS", "Invalid credentials", request, env, 401)
   }
 
   const token = await issueApiToken(env, user.id, body?.label ?? null)
+  const session = await buildMobileSession(env, {
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      image: user.image,
+    },
+    tokenId: token.tokenId,
+    expiresAt: token.expiresAt,
+  })
+
   return mobileJson(
     {
       token: token.token,
-      tokenId: token.tokenId,
-      expiresAt: token.expiresAt,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        image: user.image,
-      },
+      ...session,
     },
     request,
     env,

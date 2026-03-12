@@ -1,5 +1,5 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
-import { exchangeLoginCode, issueApiToken } from "@/lib/mobile-auth"
+import { buildMobileSession, exchangeLoginCode, issueApiToken } from "@/lib/mobile-auth"
 import { mobileError, mobileJson, handleMobileOptions } from "@/lib/mobile-http"
 import { ensureAuthSchema } from "@/lib/auth-schema"
 
@@ -31,12 +31,16 @@ export async function POST(request: Request) {
     .bind(userId)
     .first<{ id: string; email: string | null; name: string | null; image: string | null }>()
 
+  const session = await buildMobileSession(env, {
+    user: userRow ?? { id: userId, email: null, name: null, image: null },
+    tokenId: token.tokenId,
+    expiresAt: token.expiresAt,
+  })
+
   return mobileJson(
     {
       token: token.token,
-      tokenId: token.tokenId,
-      expiresAt: token.expiresAt,
-      user: userRow ?? { id: userId, email: null, name: null, image: null },
+      ...session,
     },
     request,
     env,

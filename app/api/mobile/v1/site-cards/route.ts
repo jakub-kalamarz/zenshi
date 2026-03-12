@@ -1,6 +1,6 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
 import { requireMobileSession } from "@/lib/mobile-auth"
-import { mobileError, mobileFromService, handleMobileOptions } from "@/lib/mobile-http"
+import { mobileError, mobileFromService, handleMobileOptions, mobileJson } from "@/lib/mobile-http"
 import { getSiteCardsData, parseSiteCardsRequest } from "@/lib/gsc-service"
 
 export async function POST(request: Request) {
@@ -19,5 +19,9 @@ export async function POST(request: Request) {
   }
 
   const result = await getSiteCardsData(env, session.user.id, parsedBody)
+  if (result.ok) {
+    const payload = (result.data ?? {}) as { results?: unknown }
+    return mobileJson(payload.results ?? {}, request, env)
+  }
   return mobileFromService(result, request, env)
 }

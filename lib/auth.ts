@@ -2,7 +2,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { ensureAuthSchema } from "@/lib/auth-schema";
 import { normalizeEmail, normalizeName } from "@/lib/credentials";
 import { getLocalePath, normalizeLocale } from "@/lib/locale";
-import { consumeOauthState, createOauthState, type MobileOAuthPurpose } from "@/lib/mobile-auth";
+import { consumeOauthState, createOauthState } from "@/lib/mobile-auth";
 
 type AuthUser = {
   id: string;
@@ -47,11 +47,38 @@ type GoogleOAuthState = {
   userId?: string;
 };
 
+export type GoogleRelinkIntent = {
+  canRelink: true;
+  code: "CONFLICT";
+  message: string;
+  provider: "google";
+  relinkToken: string;
+  status: 409;
+};
+
 export class GoogleAccountConflictError extends Error {
   public readonly status = 409;
   public readonly code = "GOOGLE_ACCOUNT_CONFLICT";
 
   constructor(message = "Google account is linked to another user") {
+    super(message);
+  }
+}
+
+export class GoogleRelinkTokenError extends Error {
+  public readonly status = 400;
+  public readonly code = "INVALID_RELINK_TOKEN";
+
+  constructor(message = "Invalid or expired relink token") {
+    super(message);
+  }
+}
+
+export class GoogleDisconnectError extends Error {
+  public readonly status = 400;
+  public readonly code = "VALIDATION_ERROR";
+
+  constructor(message = "Add a password before disconnecting Google.") {
     super(message);
   }
 }
@@ -143,6 +170,20 @@ function getLocalizedHomeFromCookies(cookies: Record<string, string>) {
   return getLocalePath(locale, "/");
 }
 
+function getLocalizedGoogleRelinkPath(cookies: Record<string, string>) {
+  const locale = normalizeLocale(cookies[NEXT_LOCALE_COOKIE]);
+  return getLocalePath(locale, "/auth/google-relink");
+}
+
+function withSearchParams(path: string, params: Record<string, string | null | undefined>) {
+  const url = new URL(path, "https://zenshi.local");
+  for (const [key, value] of Object.entries(params)) {
+    if (!value) continue;
+    url.searchParams.set(key, value);
+  }
+  return `${url.pathname}${url.search}`;
+}
+
 function resolveEnv(env: CloudflareEnv) {
   return {
     AUTH_URL: env.AUTH_URL ?? process.env.AUTH_URL,
@@ -184,10 +225,6 @@ export async function createSessionForUser(env: CloudflareEnv, userId: string) {
   };
 }
 
-function normalizeOauthPurpose(raw: string | null | undefined): MobileOAuthPurpose {
-  return raw === "link" ? "link" : "signin";
-}
-
 export async function upsertGoogleAccountForUser(
   env: CloudflareEnv,
   userId: string,
@@ -196,6 +233,9 @@ export async function upsertGoogleAccountForUser(
 ) {
   await ensureAuthSchema(env);
   const expiresAt = nowSeconds() + tokenData.expires_in;
+  const email = userInfo.email ? normalizeEmail(userInfo.email) : null;
+  const name = normalizeName(userInfo.name);
+  const image = userInfo.picture ?? null;
 
   const providerAccount = await env.DB.prepare(
     `SELECT id, user_id
@@ -211,11 +251,14 @@ export async function upsertGoogleAccountForUser(
     }
     await env.DB.prepare(
       `UPDATE auth_accounts
-       SET access_token = ?, refresh_token = COALESCE(?, refresh_token),
+       SET email = ?, name = ?, image = ?, access_token = ?, refresh_token = COALESCE(?, refresh_token),
            token_type = ?, scope = ?, expires_at = ?, updated_at = datetime('now')
        WHERE id = ?`,
     )
       .bind(
+        email,
+        name,
+        image,
         tokenData.access_token,
         tokenData.refresh_token ?? null,
         tokenData.token_type ?? null,
@@ -230,14 +273,18 @@ export async function upsertGoogleAccountForUser(
   const insertResult = await env.DB.prepare(
     `INSERT INTO auth_accounts (
        id, user_id, provider, provider_account_id,
+       email, name, image,
        access_token, refresh_token, token_type, scope, expires_at,
        created_at, updated_at
-     ) VALUES (?, ?, 'google', ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+     ) VALUES (?, ?, 'google', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
   )
     .bind(
       crypto.randomUUID(),
       userId,
       userInfo.sub,
+      email,
+      name,
+      image,
       tokenData.access_token,
       tokenData.refresh_token ?? null,
       tokenData.token_type ?? null,
@@ -261,6 +308,164 @@ export async function upsertGoogleAccountForUser(
     throw new Error("Google account creation failed");
   }
   return created.id;
+}
+
+export async function createGoogleRelinkIntent(
+  env: CloudflareEnv,
+  userId: string,
+  userInfo: GoogleUserInfo,
+  tokenData: GoogleTokenData,
+): Promise<GoogleRelinkIntent> {
+  await ensureAuthSchema(env);
+
+  const relinkToken = randomToken(24);
+  const tokenHash = await sha256(relinkToken);
+  const expiresAt = nowSeconds() + OAUTH_TTL_SECONDS;
+  const providerExpiresAt = nowSeconds() + tokenData.expires_in;
+  const email = userInfo.email ? normalizeEmail(userInfo.email) : null;
+  const name = normalizeName(userInfo.name);
+  const image = userInfo.picture ?? null;
+
+  await env.DB.prepare(`DELETE FROM auth_relink_tokens WHERE token_hash = ?`)
+    .bind(tokenHash)
+    .run();
+
+  await env.DB.prepare(
+    `INSERT INTO auth_relink_tokens (
+       token_hash, target_user_id, provider, provider_account_id,
+       email, name, image,
+       access_token, refresh_token, token_type, scope, provider_expires_at, expires_at
+     ) VALUES (?, ?, 'google', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      tokenHash,
+      userId,
+      userInfo.sub,
+      email,
+      name,
+      image,
+      tokenData.access_token,
+      tokenData.refresh_token ?? null,
+      tokenData.token_type ?? null,
+      tokenData.scope ?? null,
+      providerExpiresAt,
+      expiresAt,
+    )
+    .run();
+
+  return {
+    canRelink: true,
+    code: "CONFLICT",
+    message: "Google account is linked to another user",
+    provider: "google",
+    relinkToken,
+    status: 409,
+  };
+}
+
+export async function relinkGoogleAccountToUser(
+  env: CloudflareEnv,
+  userId: string,
+  relinkToken: string,
+) {
+  await ensureAuthSchema(env);
+
+  const tokenHash = await sha256(relinkToken);
+  const relinkState = await env.DB.prepare(
+    `SELECT target_user_id, provider_account_id, email, name, image, access_token, refresh_token, token_type, scope, provider_expires_at, expires_at
+     FROM auth_relink_tokens
+     WHERE token_hash = ?`,
+  )
+    .bind(tokenHash)
+    .first<{
+      target_user_id: string;
+      provider_account_id: string;
+      email: string | null;
+      name: string | null;
+      image: string | null;
+      access_token: string;
+      refresh_token: string | null;
+      token_type: string | null;
+      scope: string | null;
+      provider_expires_at: number;
+      expires_at: number;
+    }>();
+
+  if (!relinkState || relinkState.expires_at < nowSeconds()) {
+    throw new GoogleRelinkTokenError();
+  }
+
+  if (relinkState.target_user_id !== userId) {
+    throw new GoogleRelinkTokenError("Relink token does not belong to this user");
+  }
+
+  const providerAccount = await env.DB.prepare(
+    `SELECT id, user_id
+     FROM auth_accounts
+     WHERE provider = 'google' AND provider_account_id = ?`,
+  )
+    .bind(relinkState.provider_account_id)
+    .first<{ id: string; user_id: string }>();
+
+  if (!providerAccount) {
+    throw new GoogleRelinkTokenError("Google account is no longer available for relink");
+  }
+
+  await env.DB.prepare(
+    `UPDATE auth_accounts
+     SET user_id = ?, email = ?, name = ?, image = ?, access_token = ?, refresh_token = ?, token_type = ?, scope = ?, expires_at = ?, updated_at = datetime('now')
+     WHERE provider = 'google' AND provider_account_id = ?`,
+  )
+    .bind(
+      userId,
+      relinkState.email,
+      relinkState.name,
+      relinkState.image,
+      relinkState.access_token,
+      relinkState.refresh_token,
+      relinkState.token_type,
+      relinkState.scope,
+      relinkState.provider_expires_at,
+      relinkState.provider_account_id,
+    )
+    .run();
+
+  await env.DB.prepare(`DELETE FROM auth_relink_tokens WHERE token_hash = ?`)
+    .bind(tokenHash)
+    .run();
+
+  return {
+    accountId: providerAccount.id,
+    provider: "google" as const,
+    providerAccountId: relinkState.provider_account_id,
+    userId,
+  };
+}
+
+export async function disconnectGoogleAccountFromUser(
+  env: CloudflareEnv,
+  userId: string,
+) {
+  await ensureAuthSchema(env);
+
+  const user = await env.DB.prepare(
+    `SELECT password_hash, password_salt
+     FROM auth_users
+     WHERE id = ?`,
+  )
+    .bind(userId)
+    .first<{ password_hash: string | null; password_salt: string | null }>();
+
+  if (!user?.password_hash || !user.password_salt) {
+    throw new GoogleDisconnectError();
+  }
+
+  await env.DB.prepare(
+    `DELETE FROM auth_accounts
+     WHERE user_id = ? AND provider = 'google'`,
+  )
+    .bind(userId)
+    .run();
 }
 
 async function createUserFromGoogleInfo(env: CloudflareEnv, userInfo: GoogleUserInfo) {
@@ -586,7 +791,18 @@ export async function handleGoogleCallback(
       await upsertGoogleAccountForUser(env, oauthState.userId, userInfo, tokenData);
     } catch (error) {
       if (error instanceof GoogleAccountConflictError) {
-        return new Response(error.message, { status: error.status });
+        const relink = await createGoogleRelinkIntent(env, oauthState.userId, userInfo, tokenData);
+        const redirectTarget = withSearchParams(
+          getLocalizedGoogleRelinkPath(cookies),
+          {
+            googleRelink: "1",
+            relinkToken: relink.relinkToken,
+            provider: relink.provider,
+            returnTo: returnTo ?? localizedHome,
+          },
+        );
+        headers.set("Location", redirectTarget);
+        return new Response(null, { status: 302, headers });
       }
       throw error;
     }

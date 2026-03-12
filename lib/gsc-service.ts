@@ -68,6 +68,14 @@ type QueryMetricsRow = {
   position: number | null
 }
 
+type DeviceMetricsRow = {
+  device: string
+  clicks: number | null
+  impressions: number | null
+  ctr: number | null
+  position: number | null
+}
+
 const NAME_MAX = 60
 const ALLOWED_ICONS = new Set([
   "folder",
@@ -918,10 +926,131 @@ export async function getQueriesData(
   })
 }
 
+export async function getDevicesData(
+  env: CloudflareEnv,
+  userId: string,
+  params: {
+    siteId: string | null
+    start: string | null
+    end: string | null
+    compareStart?: string | null
+    compareEnd?: string | null
+    granularity?: string | null
+    limit?: number | null
+  },
+): Promise<ServiceResult<Record<string, unknown>>> {
+  const siteId = params.siteId?.trim()
+  const start = params.start?.trim()
+  const end = params.end?.trim()
+  const granularity = parseGranularity(params.granularity ?? null)
+  const limit = Math.min(Number(params.limit || 200), 1000)
+
+  if (!siteId || !start || !end) return err(400, "Missing siteId/start/end")
+
+  await ensureGscSchema(env)
+  const [ownerResult, lastAvailableResult] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT id FROM gsc_sites WHERE id = ? AND owner_user_id = ?`,
+    ).bind(siteId, userId),
+    env.DB.prepare(
+      `SELECT MAX(date) AS lastDate FROM gsc_page_device_daily WHERE site_id = ?`,
+    ).bind(siteId),
+  ])
+  const owner = (ownerResult.results[0] as Record<string, unknown> | undefined) ?? null
+  if (!owner) return err(404, "Not found")
+
+  const lastAvailable =
+    (lastAvailableResult.results[0] as { lastDate?: string | null } | undefined) ?? null
+  const lastDateValue = typeof lastAvailable?.lastDate === "string" ? lastAvailable.lastDate : null
+  const { effectiveStart: servedStart, effectiveEnd: servedEnd } = computeServedRange(
+    start,
+    end,
+    lastDateValue,
+  )
+
+  const aggregationSql = `SELECT
+       device,
+       SUM(clicks) AS clicks,
+       SUM(impressions) AS impressions,
+       CASE
+         WHEN SUM(impressions) > 0
+         THEN SUM(clicks) * 1.0 / SUM(impressions)
+         ELSE 0
+       END AS ctr,
+       CASE
+         WHEN SUM(impressions) > 0
+         THEN SUM(position * impressions) * 1.0 / SUM(impressions)
+         ELSE 0
+       END AS position
+     FROM gsc_page_device_daily
+     WHERE site_id = ?
+       AND date >= ?
+       AND date <= ?
+     GROUP BY device
+     ORDER BY clicks DESC
+     LIMIT ?`
+
+  const result = await env.DB.prepare(aggregationSql)
+    .bind(siteId, servedStart, servedEnd, limit)
+    .all()
+
+  const compareStart = params.compareStart?.trim()
+  const compareEnd = params.compareEnd?.trim()
+  const retention = getRetentionBounds()
+
+  if (compareStart && compareEnd) {
+    const compareServed = computeServedRange(compareStart, compareEnd, lastDateValue)
+    const compareResult = await env.DB.prepare(aggregationSql)
+      .bind(siteId, compareServed.effectiveStart, compareServed.effectiveEnd, limit)
+      .all()
+
+    const primaryRows = (result.results ?? []) as DeviceMetricsRow[]
+    const compareRows = (compareResult.results ?? []) as DeviceMetricsRow[]
+    const compareMap = new Map(compareRows.map((row) => [row.device, row]))
+
+    const devices = primaryRows.map((row) => {
+      const cmp = compareMap.get(row.device)
+      return {
+        ...row,
+        compareClicks: cmp?.clicks ?? null,
+        compareImpressions: cmp?.impressions ?? null,
+        compareCtr: cmp?.ctr ?? null,
+        comparePosition: cmp?.position ?? null,
+      }
+    })
+
+    return ok({
+      devices,
+      requestedRange: { start, end },
+      servedRange: { start: servedStart, end: servedEnd },
+      effectiveRange: servedStart !== start || servedEnd !== end ? { start: servedStart, end: servedEnd } : null,
+      retention: {
+        start: retention.retentionStart,
+        end: retention.retentionEnd,
+        partiallyOutside: start < retention.retentionStart || end > retention.retentionEnd,
+      },
+      granularity,
+    })
+  }
+
+  return ok({
+    devices: (result.results ?? []) as DeviceMetricsRow[],
+    requestedRange: { start, end },
+    servedRange: { start: servedStart, end: servedEnd },
+    effectiveRange: servedStart !== start || servedEnd !== end ? { start: servedStart, end: servedEnd } : null,
+    retention: {
+      start: retention.retentionStart,
+      end: retention.retentionEnd,
+      partiallyOutside: start < retention.retentionStart || end > retention.retentionEnd,
+    },
+    granularity,
+  })
+}
+
 export async function getSiteCardData(
   env: CloudflareEnv,
   userId: string,
-  params: { siteId: string | null; start: string | null; end: string | null; granularity?: string | null },
+  params: { siteId: string | null; start: string | null; end: string | null; compareStart?: string | null; compareEnd?: string | null; granularity?: string | null },
 ): Promise<ServiceResult<Record<string, unknown>>> {
   const siteId = params.siteId?.trim()
   const start = params.start?.trim()
@@ -1014,9 +1143,68 @@ export async function getSiteCardData(
   const filledSeries = fillSeriesGaps(series.results ?? [], servedStart, servedEnd, granularity)
   const retention = getRetentionBounds()
 
+  let compareTotal: Record<string, unknown> | null = null
+  let compareSeries: Array<Record<string, unknown>> = []
+  const compareStart = params.compareStart?.trim()
+  const compareEnd = params.compareEnd?.trim()
+
+  if (compareStart && compareEnd) {
+    const compareTotalsResult = await env.DB.prepare(
+      `SELECT
+         SUM(clicks) AS clicks,
+         SUM(impressions) AS impressions,
+         CASE
+           WHEN SUM(impressions) > 0
+           THEN SUM(clicks) * 1.0 / SUM(impressions)
+           ELSE 0
+         END AS ctr,
+         CASE
+           WHEN SUM(impressions) > 0
+           THEN SUM(position * impressions) * 1.0 / SUM(impressions)
+           ELSE 0
+         END AS position
+       FROM gsc_pages_daily
+       WHERE site_id = ?
+         AND date >= ?
+         AND date <= ?`,
+    )
+      .bind(siteId, compareStart, compareEnd)
+      .first<Record<string, unknown>>()
+
+    const compareSeriesResult = await env.DB.prepare(
+      `SELECT
+         ${bucketExpr} AS bucket,
+         SUM(clicks) AS clicks,
+         SUM(impressions) AS impressions,
+         CASE
+           WHEN SUM(impressions) > 0
+           THEN SUM(clicks) * 1.0 / SUM(impressions)
+           ELSE 0
+         END AS ctr,
+         CASE
+           WHEN SUM(impressions) > 0
+           THEN SUM(position * impressions) * 1.0 / SUM(impressions)
+           ELSE 0
+         END AS position
+       FROM gsc_pages_daily
+       WHERE site_id = ?
+         AND date >= ?
+         AND date <= ?
+       GROUP BY bucket
+       ORDER BY bucket ASC`,
+    )
+      .bind(siteId, compareStart, compareEnd)
+      .all()
+
+    compareTotal = compareTotalsResult ?? null
+    compareSeries = fillSeriesGaps(compareSeriesResult.results ?? [], compareStart, compareEnd, granularity)
+  }
+
   return ok({
     total: totals ?? null,
     series: filledSeries.length > 0 ? filledSeries : (series.results ?? []),
+    compareTotal,
+    compareSeries,
     requestedRange: { start, end },
     servedRange: { start: servedStart, end: servedEnd },
     effectiveRange:
@@ -1305,6 +1493,178 @@ function diffDaysInclusive(start: string, end: string): number {
   return Math.floor(diffMs / 86_400_000) + 1
 }
 
+type SyncStatusRow = Record<string, unknown>
+
+type SyncRunView = {
+  runId: string
+  state: string
+  progressPercent: number
+  processedUnits: number
+  totalUnits: number
+  unitLabel: "days"
+  currentUnit: string | null
+  dataFreshThrough: string | null
+  etaSeconds: number | null
+  startedAt: string | null
+  lastProgressAt: string | null
+  finishedAt: string | null
+  queuePosition: number | null
+  queueDelaySeconds: number | null
+  stallState: "normal" | "delayed" | "stalled"
+  stallReason: string | null
+  errorMessage: string | null
+}
+
+function asFiniteInt(value: unknown, fallback = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.trunc(parsed)
+}
+
+function parseDateMs(value: unknown) {
+  if (typeof value !== "string" || value.length === 0) return null
+  const normalized = value.includes("T") ? value : `${value}Z`
+  const ms = new Date(normalized).getTime()
+  return Number.isFinite(ms) ? ms : null
+}
+
+function deriveStallState(
+  lastProgressMs: number | null,
+  nowMs: number,
+  state: string | null,
+): SyncRunView["stallState"] {
+  if (state === "queued") return "normal"
+  if (!lastProgressMs) return "normal"
+  const ageMs = nowMs - lastProgressMs
+  if (ageMs >= 5 * 60_000) return "stalled"
+  if (ageMs >= 90_000) return "delayed"
+  return "normal"
+}
+
+function deriveEtaSeconds(
+  startedAtMs: number | null,
+  processedUnits: number,
+  totalUnits: number,
+  state: string,
+  nowMs: number,
+) {
+  if (!startedAtMs || processedUnits <= 0 || totalUnits <= processedUnits) return null
+  if (!["preparing", "syncing", "finalizing"].includes(state)) return null
+  const elapsedSeconds = Math.max(1, Math.round((nowMs - startedAtMs) / 1000))
+  const unitsPerSecond = processedUnits / elapsedSeconds
+  if (!Number.isFinite(unitsPerSecond) || unitsPerSecond <= 0) return null
+  return Math.max(1, Math.round((totalUnits - processedUnits) / unitsPerSecond))
+}
+
+export function buildSyncStatusView(
+  row: SyncStatusRow,
+  options: {
+    expectedDays: number
+    retentionStart: string
+    retentionEnd: string
+    nowMs?: number
+  },
+) {
+  const nowMs = options.nowMs ?? Date.now()
+  const updatedAt = (row.updated_at as string) ?? null
+  const syncedDays = Math.min(options.expectedDays, Math.max(0, asFiniteInt(row.dates_synced)))
+  const remainingDays = Math.max(0, options.expectedDays - syncedDays)
+  const syncProgressPct = options.expectedDays > 0 ? Math.round((syncedDays / options.expectedDays) * 100) : 0
+  const lastSuccessfulDataFreshThrough =
+    (row.last_synced_date as string) ??
+    (row.max_date as string) ??
+    null
+
+  const runId = typeof row.active_run_id === "string" && row.active_run_id.length > 0
+    ? row.active_run_id
+    : null
+  const runState = typeof row.active_run_state === "string" && row.active_run_state.length > 0
+    ? row.active_run_state
+    : null
+  const startedAt = (row.active_run_started_at as string) ?? null
+  const lastProgressAt = (row.active_run_last_progress_at as string) ?? updatedAt
+  const finishedAt = (row.active_run_finished_at as string) ?? null
+  const totalUnits = Math.max(0, asFiniteInt(row.active_run_total_units))
+  const processedUnits = Math.max(0, Math.min(totalUnits || Number.MAX_SAFE_INTEGER, asFiniteInt(row.active_run_processed_units)))
+  const stallState = deriveStallState(parseDateMs(lastProgressAt), nowMs, runState)
+  const queuePosition = row.active_run_queue_position == null ? null : asFiniteInt(row.active_run_queue_position)
+  const queueDelaySeconds = row.active_run_queue_delay_seconds == null ? null : asFiniteInt(row.active_run_queue_delay_seconds)
+  const activeRunDataFreshThrough =
+    (row.active_run_data_fresh_through as string) ??
+    lastSuccessfulDataFreshThrough
+  const currentUnit =
+    (row.active_run_current_unit as string) ??
+    (row.backfill_cursor_date as string) ??
+    null
+  const errorMessage = (row.error_message as string) ?? null
+
+  const runView: SyncRunView | null = runId && runState
+    ? {
+        runId,
+        state: runState,
+        progressPercent: totalUnits > 0 ? Math.round((processedUnits / totalUnits) * 100) : 0,
+        processedUnits,
+        totalUnits,
+        unitLabel: "days",
+        currentUnit,
+        dataFreshThrough: activeRunDataFreshThrough,
+        etaSeconds: deriveEtaSeconds(parseDateMs(startedAt), processedUnits, totalUnits, runState, nowMs),
+        startedAt,
+        lastProgressAt,
+        finishedAt,
+        queuePosition,
+        queueDelaySeconds,
+        stallState,
+        stallReason: stallState === "delayed"
+          ? "Progress is slower than usual."
+          : stallState === "stalled"
+            ? "No progress detected recently."
+            : null,
+        errorMessage,
+      }
+    : null
+
+  const activeRunStates = new Set(["queued", "preparing", "syncing", "finalizing"])
+  const activeRun = runView && activeRunStates.has(runView.state) ? runView : null
+  const lastCompletedRun = runView && !activeRunStates.has(runView.state) ? runView : null
+
+  return {
+    siteId: row.id as string,
+    siteUrl: row.gsc_site_url as string,
+    lastSyncedDate: (row.last_synced_date as string) ?? null,
+    status: (row.status as string) ?? null,
+    errorMessage,
+    updatedAt,
+    backfillCursorDate: (row.backfill_cursor_date as string) ?? null,
+    totalRows: asFiniteInt(row.total_rows),
+    datesSynced: asFiniteInt(row.dates_synced),
+    truncatedDates: asFiniteInt(row.truncated_dates),
+    minDate: (row.min_date as string) ?? null,
+    maxDate: (row.max_date as string) ?? null,
+    isSyncing: activeRun !== null,
+    retentionStart: options.retentionStart,
+    retentionEnd: options.retentionEnd,
+    expectedDays: options.expectedDays,
+    syncedDays,
+    remainingDays,
+    syncProgressPct,
+    activeRun,
+    lastCompletedRun,
+    lastSuccessfulDataFreshThrough,
+    lastVisibleDataUpdatedAt: updatedAt,
+    healthSummary:
+      activeRun?.stallState === "stalled"
+        ? "stalled"
+        : activeRun?.stallState === "delayed"
+          ? "delayed"
+          : lastCompletedRun?.state === "error"
+            ? "error"
+            : lastCompletedRun?.state === "partial"
+              ? "partial"
+              : "healthy",
+  }
+}
+
 export async function getSyncStatus(
   env: CloudflareEnv,
   userId: string,
@@ -1335,6 +1695,11 @@ export async function getSyncStatus(
      SELECT us.id, us.gsc_site_url,
             ss.last_synced_date, ss.status, ss.error_message, ss.updated_at,
             ss.backfill_cursor_date,
+            ss.active_run_id, ss.active_run_state, ss.active_run_started_at,
+            ss.active_run_last_progress_at, ss.active_run_finished_at,
+            ss.active_run_total_units, ss.active_run_processed_units,
+            ss.active_run_queue_position, ss.active_run_queue_delay_seconds,
+            ss.active_run_data_fresh_through, ss.active_run_current_unit,
             log.total_rows, log.dates_synced, log.truncated_dates, log.min_date, log.max_date
      FROM user_sites us
      LEFT JOIN gsc_sync_state ss ON ss.site_id = us.id
@@ -1344,40 +1709,13 @@ export async function getSyncStatus(
     .bind(userId)
     .all()
 
-  const now = Date.now()
-
-  const statuses = (result.results ?? []).map((row: Record<string, unknown>) => {
-    const updatedAt = (row.updated_at as string) ?? null
-    const updatedMs = updatedAt ? new Date(updatedAt.includes("T") ? updatedAt : `${updatedAt}Z`).getTime() : 0
-    const isSyncing = updatedAt ? now - updatedMs < 60_000 : false
-    const syncedDaysRaw = Number(row.dates_synced ?? 0)
-    const syncedDays = Number.isFinite(syncedDaysRaw) ? Math.max(0, syncedDaysRaw) : 0
-    const clampedSyncedDays = Math.min(syncedDays, expectedDays)
-    const remainingDays = Math.max(0, expectedDays - clampedSyncedDays)
-    const syncProgressPct = expectedDays > 0 ? Math.round((clampedSyncedDays / expectedDays) * 100) : 0
-
-    return {
-      siteId: row.id as string,
-      siteUrl: row.gsc_site_url as string,
-      lastSyncedDate: (row.last_synced_date as string) ?? null,
-      status: (row.status as string) ?? null,
-      errorMessage: (row.error_message as string) ?? null,
-      updatedAt,
-      backfillCursorDate: (row.backfill_cursor_date as string) ?? null,
-      totalRows: (row.total_rows as number) ?? 0,
-      datesSynced: (row.dates_synced as number) ?? 0,
-      truncatedDates: (row.truncated_dates as number) ?? 0,
-      minDate: (row.min_date as string) ?? null,
-      maxDate: (row.max_date as string) ?? null,
-      isSyncing,
+  const statuses = (result.results ?? []).map((row: Record<string, unknown>) =>
+    buildSyncStatusView(row, {
+      expectedDays,
       retentionStart,
       retentionEnd,
-      expectedDays,
-      syncedDays: clampedSyncedDays,
-      remainingDays,
-      syncProgressPct,
-    }
-  })
+    }),
+  )
 
   return ok({ statuses })
 }

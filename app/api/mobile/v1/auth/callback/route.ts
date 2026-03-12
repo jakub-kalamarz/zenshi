@@ -1,44 +1,45 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
 import { ensureAuthSchema } from "@/lib/auth-schema"
-import { GoogleAccountConflictError, signInWithGoogle, upsertGoogleAccountForUser } from "@/lib/auth"
+import {
+  createGoogleRelinkIntent,
+  GoogleAccountConflictError,
+  signInWithGoogle,
+  upsertGoogleAccountForUser,
+} from "@/lib/auth"
+import { normalizeLocale } from "@/lib/locale"
 import { consumeOauthState, createLoginCode } from "@/lib/mobile-auth"
+import {
+  ensureMobileGoogleEnv,
+  exchangeGoogleCode,
+  fetchGoogleUser,
+  resolveMobileBaseOrigin,
+  type MobileGoogleTokenResponse,
+  type MobileGoogleUserInfo,
+} from "@/lib/mobile-google-auth"
+import { buildMobileGoogleConflictPagePath, buildMobileGoogleSuccessPagePath } from "@/lib/mobile-oauth-ui"
 import { mobileError, mobileJson, handleMobileOptions, withMobileCors } from "@/lib/mobile-http"
-
-type TokenResponse = {
-  access_token: string
-  refresh_token?: string
-  expires_in: number
-  token_type?: string
-  scope?: string
-  id_token?: string
-}
-
-type UserInfoResponse = {
-  sub: string
-  email?: string
-  name?: string
-  picture?: string
-}
-
-function resolveAuthEnv(env: CloudflareEnv) {
-  return {
-    AUTH_URL: env.AUTH_URL ?? process.env.AUTH_URL,
-    AUTH_GOOGLE_ID: env.AUTH_GOOGLE_ID ?? process.env.AUTH_GOOGLE_ID,
-    AUTH_GOOGLE_SECRET: env.AUTH_GOOGLE_SECRET ?? process.env.AUTH_GOOGLE_SECRET,
-  }
-}
-
-function ensureEnv(env: CloudflareEnv) {
-  const resolved = resolveAuthEnv(env)
-  if (!resolved.AUTH_GOOGLE_ID || !resolved.AUTH_GOOGLE_SECRET) {
-    throw new Error("Missing AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET")
-  }
-}
 
 function wantsJson(request: Request) {
   const accept = request.headers.get("accept") || ""
   const url = new URL(request.url)
   return accept.includes("application/json") || url.searchParams.get("format") === "json"
+}
+
+function parseCookies(header: string | null) {
+  const output: Record<string, string> = {}
+  if (!header) return output
+  const parts = header.split(";")
+  for (const part of parts) {
+    const [name, ...rest] = part.trim().split("=")
+    if (!name) continue
+    output[name] = decodeURIComponent(rest.join("=") || "")
+  }
+  return output
+}
+
+function resolveLocale(request: Request) {
+  const cookies = parseCookies(request.headers.get("cookie"))
+  return normalizeLocale(cookies.NEXT_LOCALE)
 }
 
 function toHtmlResponse(html: string, request: Request, env: CloudflareEnv) {
@@ -50,7 +51,7 @@ function toHtmlResponse(html: string, request: Request, env: CloudflareEnv) {
 }
 
 function userViewFromGoogleOrDb(
-  fallbackUser: UserInfoResponse,
+  fallbackUser: MobileGoogleUserInfo,
   dbUser:
     | {
         id: string
@@ -68,57 +69,13 @@ function userViewFromGoogleOrDb(
   }
 }
 
-async function exchangeGoogleCode(
-  env: CloudflareEnv,
-  code: string,
-  verifier: string,
-  redirectUri: string,
-) {
-  const resolved = resolveAuthEnv(env)
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: resolved.AUTH_GOOGLE_ID ?? "",
-      client_secret: resolved.AUTH_GOOGLE_SECRET ?? "",
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-      code_verifier: verifier,
-    }),
-  })
-
-  if (!tokenRes.ok) {
-    const text = await tokenRes.text()
-    throw new Error(`Token exchange failed: ${text}`)
-  }
-
-  const tokenData = (await tokenRes.json()) as TokenResponse
-  if (!tokenData.access_token || !tokenData.expires_in) {
-    throw new Error("Invalid token response")
-  }
-
-  return tokenData
-}
-
-async function fetchGoogleUser(accessToken: string) {
-  const userRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-  if (!userRes.ok) {
-    const text = await userRes.text()
-    throw new Error(`Userinfo failed: ${text}`)
-  }
-  return (await userRes.json()) as UserInfoResponse
-}
-
 export async function GET(request: Request) {
   const { env } = await getCloudflareContext({ async: true })
   const preflight = handleMobileOptions(request, env)
   if (preflight) return preflight
 
   await ensureAuthSchema(env)
-  ensureEnv(env)
+  ensureMobileGoogleEnv(env)
 
   const url = new URL(request.url)
   const error = url.searchParams.get("error")
@@ -137,11 +94,10 @@ export async function GET(request: Request) {
     return mobileError("OAUTH_ERROR", "Invalid or expired state", request, env, 400)
   }
 
-  const requestOrigin = new URL(request.url).origin
-  const baseOrigin = requestOrigin || env.AUTH_URL || "http://localhost:3000"
+  const baseOrigin = resolveMobileBaseOrigin(request, env)
   const redirectUri = new URL("/api/mobile/v1/auth/callback", baseOrigin).toString()
 
-  let tokenData: TokenResponse
+  let tokenData: MobileGoogleTokenResponse
   try {
     tokenData = await exchangeGoogleCode(env, code, stateData.verifier, redirectUri)
   } catch (error_) {
@@ -149,7 +105,7 @@ export async function GET(request: Request) {
     return mobileError("OAUTH_ERROR", message, request, env, 400)
   }
 
-  let userInfo: UserInfoResponse
+  let userInfo: MobileGoogleUserInfo
   try {
     userInfo = await fetchGoogleUser(tokenData.access_token)
   } catch (error_) {
@@ -166,7 +122,25 @@ export async function GET(request: Request) {
       await upsertGoogleAccountForUser(env, stateData.userId, userInfo, tokenData)
     } catch (error_) {
       if (error_ instanceof GoogleAccountConflictError) {
-        return mobileError("CONFLICT", error_.message, request, env, error_.status)
+        const relink = await createGoogleRelinkIntent(env, stateData.userId, userInfo, tokenData)
+        if (!wantsJson(request)) {
+          const scheme = (env as CloudflareEnv & { MOBILE_APP_SCHEME?: string }).MOBILE_APP_SCHEME || "zenshi"
+          return new Response(null, {
+            status: 302,
+            headers: {
+              Location: buildMobileGoogleConflictPagePath({
+                locale: resolveLocale(request),
+                relinkToken: relink.relinkToken,
+                scheme,
+              }),
+            },
+          })
+        }
+        return mobileError("CONFLICT", relink.message, request, env, error_.status, {
+          canRelink: relink.canRelink,
+          provider: relink.provider,
+          relinkToken: relink.relinkToken,
+        })
       }
       return mobileError("OAUTH_ERROR", "Failed to link Google account", request, env, 500)
     }
@@ -184,21 +158,15 @@ export async function GET(request: Request) {
     }
 
     const scheme = (env as CloudflareEnv & { MOBILE_APP_SCHEME?: string }).MOBILE_APP_SCHEME || "zenshi"
-    const deepLink = `${scheme}://auth?linked=1`
-    const html = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Google link complete</title>
-  </head>
-  <body>
-    <p>Google account linked. You can return to the app.</p>
-    <p><a href="${deepLink}">Open the app</a></p>
-  </body>
-</html>`
-
-    return toHtmlResponse(html, request, env)
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: buildMobileGoogleSuccessPagePath({
+          locale: resolveLocale(request),
+          scheme,
+        }),
+      },
+    })
   }
 
   const signedInUser = await signInWithGoogle(env, userInfo, tokenData)
@@ -218,18 +186,10 @@ export async function GET(request: Request) {
 
   const scheme = (env as CloudflareEnv & { MOBILE_APP_SCHEME?: string }).MOBILE_APP_SCHEME || "zenshi"
   const deepLink = `${scheme}://auth?code=${encodeURIComponent(loginCode)}`
-  const html = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Sign in complete</title>
-  </head>
-  <body>
-    <p>Sign in complete. You can return to the app.</p>
-    <p><a href="${deepLink}">Open the app</a></p>
-  </body>
-</html>`
-
-  return toHtmlResponse(html, request, env)
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: deepLink,
+    },
+  })
 }

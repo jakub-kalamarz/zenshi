@@ -21,10 +21,17 @@ export type MobileAuthUser = {
   image: string | null
 }
 
+export type MobileConnectedGoogleAccount = {
+  email: string | null
+  name: string | null
+  image: string | null
+}
+
 export type MobileSession = {
   user: MobileAuthUser
   tokenId: string
   expiresAt: string | null
+  googleAccount: MobileConnectedGoogleAccount | null
 }
 
 const DEFAULT_TOKEN_TTL_DAYS = 90
@@ -60,7 +67,7 @@ function readIntEnv(env: MobileEnv, key: keyof MobileEnv, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-function parseBearerToken(request: Request) {
+export function parseBearerToken(request: Request) {
   const header = request.headers.get("authorization") || ""
   const [scheme, value] = header.split(" ")
   if (scheme?.toLowerCase() !== "bearer") return null
@@ -129,7 +136,7 @@ export async function verifyApiToken(env: MobileEnv, token: string | null) {
     .bind(row.token_id)
     .run()
 
-  return {
+  return buildMobileSession(env, {
     user: {
       id: row.user_id,
       email: row.email,
@@ -138,7 +145,7 @@ export async function verifyApiToken(env: MobileEnv, token: string | null) {
     },
     tokenId: row.token_id,
     expiresAt: row.expires_at ? new Date(row.expires_at * 1000).toISOString() : null,
-  } satisfies MobileSession
+  })
 }
 
 export async function requireMobileSession(env: MobileEnv, request: Request) {
@@ -158,6 +165,46 @@ export async function revokeApiToken(env: MobileEnv, token: string | null) {
     .bind(tokenHash)
     .run()
   return (result.meta?.changes ?? 0) > 0
+}
+
+export async function buildMobileSession(
+  env: MobileEnv,
+  session: {
+    user: MobileAuthUser
+    tokenId: string
+    expiresAt: string | null
+  },
+): Promise<MobileSession> {
+  const googleAccount = await findLinkedGoogleAccount(env, session.user.id)
+  return {
+    ...session,
+    googleAccount,
+  }
+}
+
+async function findLinkedGoogleAccount(
+  env: MobileEnv,
+  userId: string,
+): Promise<MobileConnectedGoogleAccount | null> {
+  const account = await env.DB.prepare(
+    `SELECT id, email, name, image
+     FROM auth_accounts
+     WHERE user_id = ? AND provider = 'google'
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+  )
+    .bind(userId)
+    .first<{ id: string; email: string | null; name: string | null; image: string | null }>()
+
+  if (!account) {
+    return null
+  }
+
+  return {
+    email: account.email ?? null,
+    name: account.name ?? null,
+    image: account.image ?? null,
+  }
 }
 
 export async function createLoginCode(env: MobileEnv, userId: string) {

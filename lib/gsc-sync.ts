@@ -121,6 +121,7 @@ export async function enqueueSyncForSite(env: CloudflareEnv, siteId: string): Pr
   }
 
   if (!messages.length) return 0
+  await beginSyncRun(env, siteId, unsyncedDates.length)
   const batches = chunk(messages, 100)
   for (const batch of batches) {
     await env.GSC_SYNC_QUEUE.sendBatch(batch)
@@ -198,6 +199,7 @@ export async function runRangeSyncDirect(
 export async function processSyncMessage(message: GscSyncMessage, env: CloudflareEnv) {
   await ensureGscSchema(env)
   await ensureSyncState(env, message.siteId)
+  await markSyncRunStage(env, message.siteId, "preparing", message.startDate)
   const site = await env.DB.prepare(
     `SELECT id, owner_user_id, gsc_site_url
      FROM gsc_sites
@@ -253,6 +255,7 @@ async function syncRangeForSite(
   endDate: string,
 ) {
   try {
+    await markSyncRunStage(env, site.id, "syncing", startDate)
     const apiMaxPages = readIntEnv(env, "GSC_API_MAX_PAGES", DEFAULT_API_MAX_PAGES)
     const data = await fetchSearchAnalytics(
       env,
@@ -368,6 +371,7 @@ async function syncRangeForSite(
           false,
         )
         await insertSyncLog(env, site.id, date, 0, "truncated")
+        await advanceSyncRunProgress(env, site.id, date, "truncated", false)
       }
       return
     }
@@ -390,6 +394,7 @@ async function syncRangeForSite(
           true,
         )
         await insertSyncLog(env, site.id, date, 0, "empty")
+        await advanceSyncRunProgress(env, site.id, date, "empty", false)
         continue
       }
 
@@ -399,6 +404,7 @@ async function syncRangeForSite(
 
       await updateSyncState(env, site.id, date, "ok", null, true)
       await insertSyncLog(env, site.id, date, dateRows.length, "ok")
+      await advanceSyncRunProgress(env, site.id, date, "ok", true)
     }
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error)
@@ -406,6 +412,7 @@ async function syncRangeForSite(
     for (const date of allDates) {
       await updateSyncState(env, site.id, date, "error", messageText, false)
       await insertSyncLog(env, site.id, date, 0, "error")
+      await advanceSyncRunProgress(env, site.id, date, "error", false)
     }
     throw error
   }
@@ -578,6 +585,113 @@ async function ensureSyncState(env: CloudflareEnv, siteId: string) {
      ON CONFLICT(site_id) DO NOTHING`,
   )
     .bind(siteId)
+    .run()
+}
+
+async function beginSyncRun(env: CloudflareEnv, siteId: string, totalUnits: number) {
+  await env.DB.prepare(
+    `UPDATE gsc_sync_state
+     SET active_run_id = ?,
+         active_run_state = 'queued',
+         active_run_started_at = datetime('now'),
+         active_run_last_progress_at = datetime('now'),
+         active_run_finished_at = NULL,
+         active_run_total_units = ?,
+         active_run_processed_units = 0,
+         active_run_warning_count = 0,
+         active_run_error_count = 0,
+         active_run_queue_position = NULL,
+         active_run_queue_delay_seconds = NULL,
+         active_run_data_fresh_through = last_synced_date,
+         active_run_current_unit = backfill_cursor_date,
+         updated_at = datetime('now')
+     WHERE site_id = ?`,
+  )
+    .bind(crypto.randomUUID(), totalUnits, siteId)
+    .run()
+}
+
+async function markSyncRunStage(
+  env: CloudflareEnv,
+  siteId: string,
+  state: "preparing" | "syncing" | "finalizing",
+  currentUnit: string | null,
+) {
+  await env.DB.prepare(
+    `UPDATE gsc_sync_state
+     SET active_run_state = CASE
+           WHEN active_run_id IS NULL THEN active_run_state
+           WHEN active_run_finished_at IS NOT NULL THEN active_run_state
+           ELSE ?
+         END,
+         active_run_last_progress_at = CASE
+           WHEN active_run_id IS NULL OR active_run_finished_at IS NOT NULL THEN active_run_last_progress_at
+           ELSE datetime('now')
+         END,
+         active_run_current_unit = COALESCE(?, active_run_current_unit),
+         updated_at = datetime('now')
+     WHERE site_id = ?`,
+  )
+    .bind(state, currentUnit, siteId)
+    .run()
+}
+
+async function advanceSyncRunProgress(
+  env: CloudflareEnv,
+  siteId: string,
+  currentUnit: string,
+  outcome: "ok" | "empty" | "truncated" | "error",
+  advanceFreshness: boolean,
+) {
+  const warningIncrement = outcome === "empty" || outcome === "truncated" ? 1 : 0
+  const errorIncrement = outcome === "error" ? 1 : 0
+
+  await env.DB.prepare(
+    `UPDATE gsc_sync_state
+     SET active_run_processed_units = CASE
+           WHEN active_run_total_units IS NULL THEN active_run_processed_units
+           ELSE MIN(COALESCE(active_run_total_units, 0), COALESCE(active_run_processed_units, 0) + 1)
+         END,
+         active_run_warning_count = COALESCE(active_run_warning_count, 0) + ?,
+         active_run_error_count = COALESCE(active_run_error_count, 0) + ?,
+         active_run_last_progress_at = datetime('now'),
+         active_run_current_unit = ?,
+         active_run_data_fresh_through = CASE
+           WHEN ? = 1 AND (active_run_data_fresh_through IS NULL OR ? > active_run_data_fresh_through) THEN ?
+           ELSE active_run_data_fresh_through
+         END,
+         active_run_state = CASE
+           WHEN active_run_id IS NULL THEN active_run_state
+           WHEN active_run_total_units IS NOT NULL
+             AND MIN(COALESCE(active_run_total_units, 0), COALESCE(active_run_processed_units, 0) + 1) >= COALESCE(active_run_total_units, 0)
+             THEN CASE
+               WHEN COALESCE(active_run_error_count, 0) + ? > 0 THEN 'error'
+               WHEN COALESCE(active_run_warning_count, 0) + ? > 0 THEN 'partial'
+               ELSE 'success'
+             END
+           ELSE 'syncing'
+         END,
+         active_run_finished_at = CASE
+           WHEN active_run_id IS NULL THEN active_run_finished_at
+           WHEN active_run_total_units IS NOT NULL
+             AND MIN(COALESCE(active_run_total_units, 0), COALESCE(active_run_processed_units, 0) + 1) >= COALESCE(active_run_total_units, 0)
+             THEN datetime('now')
+           ELSE NULL
+         END,
+         updated_at = datetime('now')
+     WHERE site_id = ?`,
+  )
+    .bind(
+      warningIncrement,
+      errorIncrement,
+      currentUnit,
+      advanceFreshness ? 1 : 0,
+      currentUnit,
+      currentUnit,
+      errorIncrement,
+      warningIncrement,
+      siteId,
+    )
     .run()
 }
 

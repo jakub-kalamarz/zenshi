@@ -1,5 +1,5 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
-import { issueApiToken } from "@/lib/mobile-auth"
+import { buildMobileSession, issueApiToken } from "@/lib/mobile-auth"
 import { mobileError, mobileJson, handleMobileOptions } from "@/lib/mobile-http"
 import { ensureAuthSchema } from "@/lib/auth-schema"
 import { hashPassword, validateCredentials } from "@/lib/credentials"
@@ -55,17 +55,21 @@ export async function POST(request: Request) {
     .run()
 
   const token = await issueApiToken(env, userId, body?.label ?? null)
+  const session = await buildMobileSession(env, {
+    user: {
+      id: userId,
+      email,
+      name: validation.data.name,
+      image: null,
+    },
+    tokenId: token.tokenId,
+    expiresAt: token.expiresAt,
+  })
+
   return mobileJson(
     {
       token: token.token,
-      tokenId: token.tokenId,
-      expiresAt: token.expiresAt,
-      user: {
-        id: userId,
-        email,
-        name: validation.data.name,
-        image: null,
-      },
+      ...session,
     },
     request,
     env,
