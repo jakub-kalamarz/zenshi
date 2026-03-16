@@ -477,6 +477,30 @@ export async function createShare(
   const ownedScope = await verifyOwnerScope(env, userId, scopeType, scopeId)
   if (!ownedScope) return err(404, "Scope not found")
 
+  const existing = await env.DB.prepare(
+    `SELECT id, scope_type, scope_id, token, expires_at
+     FROM gsc_share_links
+     WHERE owner_user_id = ?
+       AND scope_type = ?
+       AND scope_id = ?
+       AND status = 'active'
+       AND expires_at > datetime('now')
+     ORDER BY created_at DESC
+     LIMIT 1`,
+  )
+    .bind(userId, scopeType, scopeId)
+    .first<{ id: string; scope_type: string; scope_id: string; token: string; expires_at: string }>()
+
+  if (existing?.token) {
+    return ok({
+      id: existing.id,
+      scopeType: existing.scope_type,
+      scopeId: existing.scope_id,
+      expiresAt: existing.expires_at,
+      shareUrl: buildShareUrl(request, existing.token),
+    })
+  }
+
   const branding = sanitizeShareBranding(payload?.branding)
   const defaults = payload?.defaults !== undefined ? sanitizeShareDefaults(payload.defaults) : null
   const persistedCompareMode = defaults?.compareMode ?? "disabled"
