@@ -203,6 +203,15 @@ function makeAuthedRequest(path: string) {
           refresh_token: "refresh-1",
           expires_at: 3600,
         },
+        {
+          id: "account-2",
+          user_id: "user-1",
+          provider: "google",
+          provider_account_id: "google-sub-2",
+          access_token: "token-2",
+          refresh_token: "refresh-2",
+          expires_at: 7200,
+        },
       ],
     }),
   }
@@ -213,16 +222,23 @@ function makeAuthedRequest(path: string) {
       method: "POST",
       headers: {
         authorization: `Bearer ${token.token}`,
+        "content-type": "application/json",
       },
+      body: JSON.stringify({ accountId: "account-1" }),
     }),
   )
   assert.equal(response.status, 200)
   const payload = (await response.json()) as {
     ok: boolean
-    data: { googleAccount: null }
+    data: { googleAccounts: Array<{ accountId: string; email: string | null; name: string | null; image: string | null }> }
   }
   assert.equal(payload.ok, true)
-  assert.equal(payload.data.googleAccount, null)
+  assert.deepEqual(payload.data.googleAccounts, [{
+    accountId: "account-2",
+    email: null,
+    name: null,
+    image: null,
+  }])
 }
 
 {

@@ -21,6 +21,19 @@ const env = {
       access_token: "token-1",
       refresh_token: "refresh-1",
       expires_at: 3600,
+      updated_at: "2026-04-04T10:00:00Z",
+    }, {
+      id: "google-account-2",
+      user_id: "user-1",
+      provider: "google",
+      provider_account_id: "google-sub-2",
+      email: "owner-2@gmail.com",
+      name: "Owner Google Two",
+      image: "https://example.com/google-avatar-2.png",
+      access_token: "token-2",
+      refresh_token: "refresh-2",
+      expires_at: 7200,
+      updated_at: "2026-04-04T11:00:00Z",
     }],
   }),
 } as { DB: ReturnType<typeof createFakeDb> }
@@ -64,17 +77,26 @@ const issuedToken = await issueApiToken(env, "user-1", "iPhone")
 const verifiedSession = await verifyApiToken(env, issuedToken.token)
 assert.equal(verifiedSession?.tokenId, issuedToken.tokenId)
 assert.equal(verifiedSession?.user.id, "user-1")
-assert.deepEqual(verifiedSession?.googleAccount, {
-  email: "owner@gmail.com",
-  name: "Owner Google",
-  image: "https://example.com/google-avatar.png",
-})
+assert.deepEqual(verifiedSession?.googleAccounts, [
+  {
+    accountId: "google-account-2",
+    email: "owner-2@gmail.com",
+    name: "Owner Google Two",
+    image: "https://example.com/google-avatar-2.png",
+  },
+  {
+    accountId: "google-account-1",
+    email: "owner@gmail.com",
+    name: "Owner Google",
+    image: "https://example.com/google-avatar.png",
+  },
+])
 
 env.DB.prepare(`DELETE FROM auth_accounts WHERE user_id = ? AND provider = 'google'`)
   .bind("user-1")
   .run()
 
 const verifiedSessionWithoutGoogle = await verifyApiToken(env, issuedToken.token)
-assert.equal(verifiedSessionWithoutGoogle?.googleAccount, null)
+assert.deepEqual(verifiedSessionWithoutGoogle?.googleAccounts, [])
 
 console.log("mobile-auth spec passed")

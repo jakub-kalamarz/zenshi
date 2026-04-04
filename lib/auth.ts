@@ -445,6 +445,7 @@ export async function relinkGoogleAccountToUser(
 export async function disconnectGoogleAccountFromUser(
   env: CloudflareEnv,
   userId: string,
+  accountId: string,
 ) {
   await ensureAuthSchema(env);
 
@@ -462,9 +463,9 @@ export async function disconnectGoogleAccountFromUser(
 
   await env.DB.prepare(
     `DELETE FROM auth_accounts
-     WHERE user_id = ? AND provider = 'google'`,
+     WHERE user_id = ? AND provider = 'google' AND id = ?`,
   )
-    .bind(userId)
+    .bind(userId, accountId)
     .run();
 }
 

@@ -150,12 +150,23 @@ const disconnectEnv = {
       token_type: "Bearer",
       scope: "scope-a",
       expires_at: 3_600,
+    }, {
+      id: "account-2",
+      user_id: userA,
+      provider: "google",
+      provider_account_id: "google-sub-2",
+      access_token: "token-2",
+      refresh_token: "refresh-2",
+      token_type: "Bearer",
+      scope: "scope-b",
+      expires_at: 7_200,
     }],
   }),
 } as { DB: ReturnType<typeof createFakeDb> }
 
-await disconnectGoogleAccountFromUser(disconnectEnv, userA)
-assert.equal(disconnectEnv.DB.table("auth_accounts").length, 0)
+await disconnectGoogleAccountFromUser(disconnectEnv, userA, "account-1")
+assert.equal(disconnectEnv.DB.table("auth_accounts").length, 1)
+assert.equal(disconnectEnv.DB.table("auth_accounts")[0].id, "account-2")
 
 const googleOnlyEnv = {
   DB: createFakeDb({
@@ -182,7 +193,7 @@ const googleOnlyEnv = {
 } as { DB: ReturnType<typeof createFakeDb> }
 
 await assert.rejects(async () => {
-  await disconnectGoogleAccountFromUser(googleOnlyEnv, userA)
+  await disconnectGoogleAccountFromUser(googleOnlyEnv, userA, "account-1")
 }, /password/i)
 
 console.log("auth spec passed")

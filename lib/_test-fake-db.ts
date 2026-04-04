@@ -56,6 +56,12 @@ export function createFakeDb(seed: Seed = {}) {
     return row ? clone(row) : null
   }
 
+  function findAuthAccountsByUserAndProvider(userId: unknown) {
+    return tables.auth_accounts
+      .filter((item) => item.user_id === userId && item.provider === "google")
+      .map((row) => clone(row))
+  }
+
   function findAuthUserByEmail(email: unknown) {
     const normalized = normalizeEmail(email)
     const row = tables.auth_users.find((item) => item.email === normalized)
@@ -87,7 +93,7 @@ export function createFakeDb(seed: Seed = {}) {
         return row ? (row as T) : null
       },
       all: async () => {
-        const rows = runAll()
+        const rows = runAll(preparedSql, bound)
         return { results: rows as FakeRow[] }
       },
       run: async () => {
@@ -209,7 +215,35 @@ export function createFakeDb(seed: Seed = {}) {
     return null
   }
 
-  function runAll() {
+  function runAll(sql: string, values: unknown[]) {
+    if (
+      sql.includes("select id, email, name, image")
+      && sql.includes("from auth_accounts")
+      && sql.includes("provider = 'google'")
+      && sql.includes("user_id = ?")
+    ) {
+      return findAuthAccountsByUserAndProvider(values[0])
+        .sort((left, right) => {
+          const leftUpdated = String(left.updated_at ?? "")
+          const rightUpdated = String(right.updated_at ?? "")
+          if (leftUpdated !== rightUpdated) {
+            return rightUpdated.localeCompare(leftUpdated)
+          }
+          const leftCreated = String(left.created_at ?? "")
+          const rightCreated = String(right.created_at ?? "")
+          if (leftCreated !== rightCreated) {
+            return rightCreated.localeCompare(leftCreated)
+          }
+          return String(right.id ?? "").localeCompare(String(left.id ?? ""))
+        })
+        .map((account) => ({
+        id: account.id,
+        email: account.email ?? null,
+        name: account.name ?? null,
+        image: account.image ?? null,
+      }))
+    }
+
     return []
   }
 
@@ -356,9 +390,15 @@ export function createFakeDb(seed: Seed = {}) {
 
     if (sql.startsWith("delete from auth_accounts")) {
       const before = tables.auth_accounts.length
-      tables.auth_accounts = tables.auth_accounts.filter((row) => !(
-        row.user_id === values[0] && row.provider === "google"
-      ))
+      tables.auth_accounts = tables.auth_accounts.filter((row) => {
+        if (!(row.user_id === values[0] && row.provider === "google")) {
+          return true
+        }
+        if (values.length < 2) {
+          return false
+        }
+        return row.id !== values[1]
+      })
       return { changes: before - tables.auth_accounts.length }
     }
 

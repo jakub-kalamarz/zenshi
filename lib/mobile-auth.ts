@@ -22,6 +22,7 @@ export type MobileAuthUser = {
 }
 
 export type MobileConnectedGoogleAccount = {
+  accountId: string
   email: string | null
   name: string | null
   image: string | null
@@ -31,7 +32,7 @@ export type MobileSession = {
   user: MobileAuthUser
   tokenId: string
   expiresAt: string | null
-  googleAccount: MobileConnectedGoogleAccount | null
+  googleAccounts: MobileConnectedGoogleAccount[]
 }
 
 const DEFAULT_TOKEN_TTL_DAYS = 90
@@ -175,36 +176,37 @@ export async function buildMobileSession(
     expiresAt: string | null
   },
 ): Promise<MobileSession> {
-  const googleAccount = await findLinkedGoogleAccount(env, session.user.id)
+  const googleAccounts = await findLinkedGoogleAccounts(env, session.user.id)
   return {
     ...session,
-    googleAccount,
+    googleAccounts,
   }
 }
 
-async function findLinkedGoogleAccount(
+async function findLinkedGoogleAccounts(
   env: MobileEnv,
   userId: string,
-): Promise<MobileConnectedGoogleAccount | null> {
-  const account = await env.DB.prepare(
+): Promise<MobileConnectedGoogleAccount[]> {
+  const accounts = await env.DB.prepare(
     `SELECT id, email, name, image
      FROM auth_accounts
      WHERE user_id = ? AND provider = 'google'
-     ORDER BY updated_at DESC
-     LIMIT 1`,
+     ORDER BY updated_at DESC, created_at DESC, id DESC`,
   )
     .bind(userId)
-    .first<{ id: string; email: string | null; name: string | null; image: string | null }>()
+    .all<{ id: string; email: string | null; name: string | null; image: string | null }>()
 
-  if (!account) {
-    return null
-  }
+  const linkedAccounts = (accounts.results ?? []).map((account) => ({
+    accountId: String(account.id),
+    email: typeof account.email === "string" ? account.email : null,
+    name: typeof account.name === "string" ? account.name : null,
+    image: typeof account.image === "string" ? account.image : null,
+  }))
 
-  return {
-    email: account.email ?? null,
-    name: account.name ?? null,
-    image: account.image ?? null,
+  if (linkedAccounts.length > 0) {
+    return linkedAccounts
   }
+  return []
 }
 
 export async function createLoginCode(env: MobileEnv, userId: string) {
