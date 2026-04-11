@@ -65,8 +65,12 @@ jobs:
           test -d .open-next/server-functions
 
       - name: Wrangler deploy dry-run
-        if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm exec wrangler deploy --dry-run --config wrangler.toml
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "Skipping wrangler dry-run because Cloudflare secrets are not configured."
+            exit 0
+          fi
+          pnpm exec wrangler deploy --dry-run --config wrangler.toml
