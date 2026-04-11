@@ -37,6 +37,14 @@ export function LoginForm({
     window.location.href = startUrl.toString();
   };
 
+  const handleApple = () => {
+    if (typeof window === "undefined") return;
+    const currentPath = `${window.location.pathname}${window.location.search}`;
+    const startUrl = new URL("/api/auth/apple/start", window.location.origin);
+    startUrl.searchParams.set("returnTo", currentPath);
+    window.location.href = startUrl.toString();
+  };
+
   const switchMode = (nextMode: "signin" | "signup") => {
     setMode(nextMode);
     setError("");
@@ -195,6 +203,19 @@ export function LoginForm({
             />
           </svg>
           {t("continueWithGoogle")}
+        </Button>
+
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full"
+          onClick={handleApple}
+          disabled={loading}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5 fill-current">
+            <path d="M15.18 1.88c0 1.42-.52 2.73-1.36 3.67-.87.98-2.29 1.73-3.56 1.63-.16-1.31.47-2.72 1.31-3.69.92-1.07 2.47-1.84 3.61-1.91zm4.11 16.54c-.75 1.09-1.08 1.57-2.04 2.53-1.34 1.34-3.23 3.02-5.58 3.04-2.09.02-2.63-1.34-5.47-1.33-2.84.01-3.44 1.35-5.53 1.33-2.35-.02-4.14-1.53-5.48-2.87C-5.76 18.6-7.5 13.95-5.78 9.96c1.22-2.84 3.94-4.63 6.49-4.63 2.59 0 4.22 1.42 6.36 1.42 2.08 0 3.35-1.42 6.34-1.42 2.27 0 4.67 1.24 5.89 3.39-5 2.74-4.19 9.94 0 12.7z" transform="translate(6 0)" />
+          </svg>
+          {t("continueWithApple")}
         </Button>
 
         <p className="text-center text-xs text-muted-foreground">

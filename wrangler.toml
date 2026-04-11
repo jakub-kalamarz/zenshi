@@ -12,6 +12,9 @@ binding = "ASSETS"
 [vars]
 AUTH_URL = "https://zenshi.dev"
 AUTH_TRUST_HOST = "true"
+AUTH_APPLE_CLIENT_ID = "us.swiftapps.zenshi.web"
+AUTH_APPLE_TEAM_ID = "CJ382RZ845"
+AUTH_APPLE_KEY_ID = "JKR8MH37J6"
 NEXT_PUBLIC_SITE_URL = "https://zenshi.dev"
 
 [[routes]]
@@ -37,7 +40,7 @@ producers = [
 ]
 
 consumers = [
-  { queue = "gsc-sync", max_batch_size = 5, max_batch_timeout = 5, max_retries = 3, max_concurrency = 1 }
+  { queue = "gsc-sync", max_batch_size = 5, max_batch_timeout = 5, max_retries = 3, max_concurrency = 3 }
 ]
 
 [observability]

@@ -33,6 +33,7 @@ Zenshi is a Next.js + Cloudflare Worker app for syncing Google Search Console (G
 - `pnpm`
 - Cloudflare account with Workers/D1/R2/Queues enabled
 - Google Cloud OAuth credentials
+- Apple Developer Sign in with Apple credentials for web login
 - Google Search Console access
 
 ## Quick start (local)
@@ -56,6 +57,10 @@ cp wrangler.toml.example wrangler.toml
 - `AUTH_SECRET`
 - `AUTH_GOOGLE_ID`
 - `AUTH_GOOGLE_SECRET`
+- `AUTH_APPLE_CLIENT_ID`
+- `AUTH_APPLE_TEAM_ID`
+- `AUTH_APPLE_KEY_ID`
+- `AUTH_APPLE_PRIVATE_KEY` or `AUTH_APPLE_PRIVATE_KEY_B64` or `AUTH_APPLE_PRIVATE_KEY_PATH`
 - `GOOGLE_API_KEY`
 - `NEXT_PUBLIC_SITE_URL`
 
@@ -136,5 +141,6 @@ MIT - see [LICENSE](./LICENSE).
 ## Troubleshooting
 
 - OAuth callback mismatch: verify `AUTH_URL` and Google OAuth redirect URI.
+- Apple login callback mismatch: verify the Apple Service ID redirect URI points to `/api/auth/callback/apple`.
 - Missing worker bindings: verify D1/R2/Queues sections in `wrangler.toml`.
 - No sync data: check cron trigger, queue consumer logs, and GSC property permissions.

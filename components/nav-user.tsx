@@ -8,6 +8,7 @@ import {
   CaretUpDown,
   ShareNetwork,
   SignOut,
+  UserCircle,
 } from "@phosphor-icons/react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -129,6 +130,12 @@ export function NavUser({ user, onSignOut }: NavUserProps) {
               <Link href={getLocalePath(locale as "en" | "pl" | "de", "/sync")}>
                 <ArrowsClockwise className="size-4" />
                 {t("syncStatus")}
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href={getLocalePath(locale as "en" | "pl" | "de", "/account")}>
+                <UserCircle className="size-4" />
+                {t("account")}
               </Link>
             </DropdownMenuItem>
           </DropdownMenuGroup>

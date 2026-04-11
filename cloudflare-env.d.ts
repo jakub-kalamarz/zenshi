@@ -15,6 +15,12 @@ declare namespace Cloudflare {
 		AUTH_TRUST_HOST: string;
 		AUTH_GOOGLE_ID: string;
 		AUTH_GOOGLE_SECRET: string;
+		AUTH_APPLE_CLIENT_ID: string;
+		AUTH_APPLE_TEAM_ID: string;
+		AUTH_APPLE_KEY_ID: string;
+		AUTH_APPLE_PRIVATE_KEY: string;
+		AUTH_APPLE_PRIVATE_KEY_B64: string;
+		AUTH_APPLE_PRIVATE_KEY_PATH: string;
 		GOOGLE_API_KEY: string;
 	}
 }
@@ -23,7 +29,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "AUTH_URL" | "AUTH_SECRET" | "AUTH_TRUST_HOST" | "AUTH_GOOGLE_ID" | "AUTH_GOOGLE_SECRET" | "GOOGLE_API_KEY">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "AUTH_URL" | "AUTH_SECRET" | "AUTH_TRUST_HOST" | "AUTH_GOOGLE_ID" | "AUTH_GOOGLE_SECRET" | "AUTH_APPLE_CLIENT_ID" | "AUTH_APPLE_TEAM_ID" | "AUTH_APPLE_KEY_ID" | "AUTH_APPLE_PRIVATE_KEY" | "AUTH_APPLE_PRIVATE_KEY_B64" | "AUTH_APPLE_PRIVATE_KEY_PATH" | "GOOGLE_API_KEY">> {}
 }
 
 // Begin runtime types

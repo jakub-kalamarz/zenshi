@@ -1,6 +1,12 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { ensureAuthSchema } from "@/lib/auth-schema";
+import {
+  exchangeAppleCode,
+  getAppleClientId,
+  verifyAppleIdentityToken,
+} from "@/lib/apple-auth";
 import { normalizeEmail, normalizeName } from "@/lib/credentials";
+import { ensureGscSchema } from "@/lib/gsc-schema";
 import { getLocalePath, normalizeLocale } from "@/lib/locale";
 import { consumeOauthState, createOauthState } from "@/lib/mobile-auth";
 
@@ -46,6 +52,13 @@ type GoogleOAuthState = {
   verifier: string;
   userId?: string;
 };
+
+type AppleIdentity = {
+  sub: string
+  email: string | null
+  emailVerified: boolean
+  isPrivateEmail: boolean
+}
 
 export type GoogleRelinkIntent = {
   canRelink: true;
@@ -197,6 +210,14 @@ function ensureEnv(env: CloudflareEnv) {
   if (!resolved.AUTH_GOOGLE_ID || !resolved.AUTH_GOOGLE_SECRET || !resolved.AUTH_URL) {
     throw new Error("Missing AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET/AUTH_URL");
   }
+}
+
+function ensureAuthBaseUrl(env: CloudflareEnv) {
+  const resolved = resolveEnv(env);
+  if (!resolved.AUTH_URL) {
+    throw new Error("Missing AUTH_URL");
+  }
+  return resolved.AUTH_URL;
 }
 
 async function buildAuthRequestFromNextHeaders() {
@@ -469,6 +490,77 @@ export async function disconnectGoogleAccountFromUser(
     .run();
 }
 
+async function upsertAppleAccountForUser(
+  env: CloudflareEnv,
+  userId: string,
+  identity: AppleIdentity,
+) {
+  await ensureAuthSchema(env);
+
+  const providerAccount = await env.DB.prepare(
+    `SELECT id, user_id
+     FROM auth_accounts
+     WHERE provider = 'apple' AND provider_account_id = ?`,
+  )
+    .bind(identity.sub)
+    .first<{ id: string; user_id: string }>();
+
+  const email = identity.email ? normalizeEmail(identity.email) : null;
+  if (providerAccount) {
+    if (providerAccount.user_id !== userId) {
+      throw new Error("Apple account is linked to another user");
+    }
+
+    await env.DB.prepare(
+      `UPDATE auth_accounts
+       SET email = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+    )
+      .bind(email, providerAccount.id)
+      .run();
+    return providerAccount.id;
+  }
+
+  const result = await env.DB.prepare(
+    `INSERT INTO auth_accounts (
+       id, user_id, provider, provider_account_id,
+       email, name, image,
+       access_token, refresh_token, token_type, scope, expires_at,
+       created_at, updated_at
+     ) VALUES (?, ?, 'apple', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      userId,
+      identity.sub,
+      email,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    )
+    .run();
+
+  if (!result?.success) {
+    throw new Error("Failed to link Apple account");
+  }
+
+  const created = await env.DB.prepare(
+    `SELECT id
+     FROM auth_accounts
+     WHERE provider = 'apple' AND provider_account_id = ?`,
+  )
+    .bind(identity.sub)
+    .first<{ id: string }>();
+  if (!created) {
+    throw new Error("Apple account creation failed");
+  }
+  return created.id;
+}
+
 async function createUserFromGoogleInfo(env: CloudflareEnv, userInfo: GoogleUserInfo) {
   const email = userInfo.email ? normalizeEmail(userInfo.email) : null;
   const existing = email
@@ -491,6 +583,22 @@ async function createUserFromGoogleInfo(env: CloudflareEnv, userInfo: GoogleUser
       normalizeName(userInfo.name),
       userInfo.picture ?? null,
     )
+    .run();
+  return id;
+}
+
+async function createUserFromAppleIdentity(
+  env: CloudflareEnv,
+  identity: AppleIdentity,
+  name?: string | null,
+) {
+  const email = identity.email ? normalizeEmail(identity.email) : null;
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO auth_users (id, email, name, image, password_updated_at)
+     VALUES (?, ?, ?, ?, NULL)`,
+  )
+    .bind(id, email, normalizeName(name), null)
     .run();
   return id;
 }
@@ -521,8 +629,10 @@ export async function signInWithGoogle(
     .first<{ user_id: string }>();
 
   let userId: string;
+  let accountMode: "existing_google" | "existing_email" | "created";
   if (existingAccount) {
     userId = existingAccount.user_id;
+    accountMode = "existing_google";
   } else {
     const normalizedEmail = userInfo.email ? normalizeEmail(userInfo.email) : null;
     const existingUser = normalizedEmail
@@ -532,6 +642,7 @@ export async function signInWithGoogle(
       : null;
     if (existingUser) {
       userId = existingUser.id;
+      accountMode = "existing_email";
       await env.DB.prepare(
         `UPDATE auth_users
          SET name = COALESCE(?, name), image = COALESCE(?, image)
@@ -541,6 +652,7 @@ export async function signInWithGoogle(
         .run();
     } else {
       userId = await createUserFromGoogleInfo(env, userInfo);
+      accountMode = "created";
     }
   }
 
@@ -549,7 +661,68 @@ export async function signInWithGoogle(
   if (!user) {
     throw new Error("User not found");
   }
-  return user;
+  return {
+    user,
+    accountMode,
+  };
+}
+
+export async function signInWithApple(
+  env: CloudflareEnv,
+  identity: AppleIdentity,
+  options: {
+    name?: string | null
+  } = {},
+) {
+  await ensureAuthSchema(env);
+
+  const existingAccount = await env.DB.prepare(
+    `SELECT user_id
+     FROM auth_accounts
+     WHERE provider = 'apple' AND provider_account_id = ?`,
+  )
+    .bind(identity.sub)
+    .first<{ user_id: string }>();
+
+  let userId: string;
+  let accountMode: "existing_apple" | "existing_email" | "created";
+  if (existingAccount) {
+    userId = existingAccount.user_id;
+    accountMode = "existing_apple";
+  } else {
+    const normalizedEmail = identity.email ? normalizeEmail(identity.email) : null;
+    const existingUser = normalizedEmail
+      ? await env.DB.prepare(`SELECT id FROM auth_users WHERE email = ?`)
+          .bind(normalizedEmail)
+          .first<{ id: string }>()
+      : null;
+
+    if (existingUser) {
+      userId = existingUser.id;
+      accountMode = "existing_email";
+      await env.DB.prepare(
+        `UPDATE auth_users
+         SET name = COALESCE(?, name)
+         WHERE id = ?`,
+      )
+        .bind(normalizeName(options.name), userId)
+        .run();
+    } else {
+      userId = await createUserFromAppleIdentity(env, identity, options.name);
+      accountMode = "created";
+    }
+  }
+
+  await upsertAppleAccountForUser(env, userId, identity);
+  const user = await getUserById(env, userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  return {
+    user,
+    accountMode,
+  };
 }
 
 function parseOAuthState(state: string | null, request: Request) {
@@ -811,11 +984,204 @@ export async function handleGoogleCallback(
     return new Response(null, { status: 302, headers });
   }
 
-  const user = await signInWithGoogle(env, userInfo, tokenData);
-  const session = await createSessionForUser(env, user.id);
+  const result = await signInWithGoogle(env, userInfo, tokenData);
+  const session = await createSessionForUser(env, result.user.id);
   headers.append("Set-Cookie", buildSessionCookieFromRequest(request, session.sessionToken));
   headers.set("Location", returnTo ?? localizedHome);
   return new Response(null, { status: 302, headers });
+}
+
+export async function startAppleOAuth(
+  request: Request,
+  options: { callbackPath?: string } = {},
+) {
+  const { env } = await getCloudflareContext({ async: true });
+  await ensureAuthSchema(env);
+
+  const clientId = getAppleClientId(env);
+  const authUrlBase = ensureAuthBaseUrl(env);
+  if (!clientId) {
+    throw new Error("Missing AUTH_APPLE_CLIENT_ID");
+  }
+
+  const requestOrigin = new URL(request.url).origin;
+  const baseOrigin = requestOrigin || authUrlBase || "http://localhost:3000";
+  const secure = baseOrigin.startsWith("https://");
+  const returnTo = sanitizeReturnTo(new URL(request.url).searchParams.get("returnTo"));
+  const callbackPath = options.callbackPath || "/api/auth/callback/apple";
+  const state = randomToken(24);
+
+  const authUrl = new URL("https://appleid.apple.com/auth/authorize");
+  authUrl.searchParams.set("client_id", clientId);
+  authUrl.searchParams.set("redirect_uri", new URL(callbackPath, baseOrigin).toString());
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("response_mode", "query");
+  authUrl.searchParams.set("scope", "name email");
+  authUrl.searchParams.set("state", state);
+
+  const headers = new Headers();
+  headers.append(
+    "Set-Cookie",
+    buildCookie(OAUTH_STATE_COOKIE, state, {
+      httpOnly: true,
+      secure,
+      sameSite: "Lax",
+      path: "/",
+      maxAge: OAUTH_TTL_SECONDS,
+    }),
+  );
+  headers.append("Set-Cookie", clearCookie(OAUTH_VERIFIER_COOKIE));
+  if (returnTo) {
+    headers.append(
+      "Set-Cookie",
+      buildCookie(OAUTH_RETURN_TO_COOKIE, returnTo, {
+        httpOnly: true,
+        secure,
+        sameSite: "Lax",
+        path: "/",
+        maxAge: OAUTH_TTL_SECONDS,
+      }),
+    );
+  } else {
+    headers.append("Set-Cookie", clearCookie(OAUTH_RETURN_TO_COOKIE));
+  }
+  headers.set("Location", authUrl.toString());
+  return new Response(null, { status: 302, headers });
+}
+
+export async function handleAppleCallback(
+  request: Request,
+  options: { callbackPath?: string } = {},
+) {
+  const { env } = await getCloudflareContext({ async: true });
+  await ensureAuthSchema(env);
+
+  const authUrlBase = ensureAuthBaseUrl(env);
+  const requestOrigin = new URL(request.url).origin;
+  const baseOrigin = requestOrigin || authUrlBase || "http://localhost:3000";
+  const callbackPath = options.callbackPath || "/api/auth/callback/apple";
+  const url = new URL(request.url);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const cookies = parseCookies(request.headers.get("cookie"));
+  const returnTo = sanitizeReturnTo(cookies[OAUTH_RETURN_TO_COOKIE]);
+  const localizedHome = getLocalizedHomeFromCookies(cookies);
+
+  if (!code || !state) {
+    return new Response("Missing code/state", { status: 400 });
+  }
+  if (cookies[OAUTH_STATE_COOKIE] !== state) {
+    return new Response("Invalid OAuth state", { status: 400 });
+  }
+
+  let identityToken: string;
+  try {
+    const tokenData = await exchangeAppleCode(
+      env,
+      code,
+      new URL(callbackPath, baseOrigin).toString(),
+    );
+    identityToken = tokenData.id_token ?? "";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Apple token exchange failed";
+    return new Response(message, { status: 400 });
+  }
+
+  let identity: AppleIdentity;
+  try {
+    identity = await verifyAppleIdentityToken(env, identityToken);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Apple identity token verification failed";
+    return new Response(message, { status: 400 });
+  }
+
+  const result = await signInWithApple(env, identity);
+  const session = await createSessionForUser(env, result.user.id);
+  const headers = new Headers();
+  headers.append("Set-Cookie", clearCookie(OAUTH_STATE_COOKIE));
+  headers.append("Set-Cookie", clearCookie(OAUTH_VERIFIER_COOKIE));
+  headers.append("Set-Cookie", clearCookie(OAUTH_RETURN_TO_COOKIE));
+  headers.append("Set-Cookie", buildSessionCookieFromRequest(request, session.sessionToken));
+  headers.set("Location", returnTo ?? localizedHome);
+  return new Response(null, { status: 302, headers });
+}
+
+export async function deleteAccountForUser(
+  env: CloudflareEnv,
+  userId: string,
+) {
+  await ensureAuthSchema(env);
+  await ensureGscSchema(env);
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM gsc_share_branding
+       WHERE share_id IN (
+         SELECT id
+         FROM gsc_share_links
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(`DELETE FROM gsc_share_links WHERE owner_user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM gsc_user_preferences WHERE user_id = ?`).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_site_folders
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_pages_daily
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_page_device_daily
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_queries_daily
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_sync_log
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_sync_state
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(`DELETE FROM gsc_folders WHERE owner_user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM gsc_sites WHERE owner_user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM auth_relink_tokens WHERE target_user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM mobile_oauth_states WHERE user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM mobile_login_codes WHERE user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM auth_sessions WHERE user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM api_tokens WHERE user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM auth_accounts WHERE user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM auth_users WHERE id = ?`).bind(userId),
+  ]);
 }
 
 export async function auth(request?: Request): Promise<AuthSession | null> {
