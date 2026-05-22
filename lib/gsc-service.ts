@@ -1,4 +1,5 @@
 import { ensureGscSchema } from "@/lib/gsc-schema"
+import { isBillingPro } from "@/lib/billing"
 import {
   listUserGscSites,
   MissingGoogleAccountError,
@@ -143,6 +144,67 @@ async function fetchSiteRows(env: CloudflareEnv, userId: string) {
     .all()
 }
 
+type DiscoveredSiteRecord = {
+  id: string
+  siteUrl: string
+  permissionLevel: string
+}
+
+async function discoverUserSites(
+  env: CloudflareEnv,
+  userId: string,
+): Promise<ServiceResult<{ sites: DiscoveredSiteRecord[] }>> {
+  await ensureGscSchema(env)
+
+  let remoteSites: { siteUrl: string; permissionLevel: string }[]
+  try {
+    remoteSites = await listUserGscSites(env, userId)
+  } catch (error) {
+    return mapGscError(error)
+  }
+
+  const existing = await env.DB.prepare(
+    `SELECT id, gsc_site_url
+     FROM gsc_sites
+     WHERE owner_user_id = ?`,
+  )
+    .bind(userId)
+    .all<{ id: string; gsc_site_url: string }>()
+
+  const existingIdsByUrl = new Map(
+    (existing.results ?? []).map((row) => [row.gsc_site_url, row.id]),
+  )
+  const existingSiteCount = existingIdsByUrl.size
+  const isPro = await isBillingPro(env, userId)
+  const discovered = new Map<string, DiscoveredSiteRecord>()
+
+  for (const site of remoteSites) {
+    const normalized = normalizeGscSiteUrl(site.siteUrl)
+    if (!normalized || discovered.has(normalized)) continue
+    if (!isPro && !existingIdsByUrl.has(normalized) && existingSiteCount + discovered.size >= 1) {
+      continue
+    }
+
+    const id = existingIdsByUrl.get(normalized) ?? crypto.randomUUID()
+    await env.DB.prepare(
+      `INSERT INTO gsc_sites (id, owner_user_id, gsc_site_url, enabled)
+       VALUES (?, ?, ?, 1)
+       ON CONFLICT(owner_user_id, gsc_site_url)
+       DO UPDATE SET enabled = 1`,
+    )
+      .bind(id, userId, normalized)
+      .run()
+
+    discovered.set(normalized, {
+      id,
+      siteUrl: normalized,
+      permissionLevel: site.permissionLevel,
+    })
+  }
+
+  return ok({ sites: [...discovered.values()] })
+}
+
 export async function listSites(
   env: CloudflareEnv,
   userId: string,
@@ -151,29 +213,13 @@ export async function listSites(
   await ensureGscSchema(env)
   let existing = await fetchSiteRows(env, userId)
 
-    if (refresh || (existing.results?.length ?? 0) === 0) {
-    let remoteSites: { siteUrl: string; permissionLevel: string }[]
-    try {
-      remoteSites = await listUserGscSites(env, userId)
-    } catch (error) {
-      return mapGscError(error)
+  if (refresh || (existing.results?.length ?? 0) === 0) {
+    const discovered = await discoverUserSites(env, userId)
+    if (!discovered.ok && (existing.results?.length ?? 0) === 0) return discovered
+    if (discovered.ok) {
+      existing = await fetchSiteRows(env, userId)
+      await enqueueDailySync(env)
     }
-
-    for (const site of remoteSites) {
-      const normalized = normalizeGscSiteUrl(site.siteUrl)
-      if (!normalized) continue
-      await env.DB.prepare(
-        `INSERT INTO gsc_sites (id, owner_user_id, gsc_site_url, enabled)
-         VALUES (?, ?, ?, 1)
-         ON CONFLICT(owner_user_id, gsc_site_url)
-         DO UPDATE SET enabled = 1`,
-      )
-        .bind(crypto.randomUUID(), userId, normalized)
-        .run()
-    }
-
-    existing = await fetchSiteRows(env, userId)
-    await enqueueDailySync(env)
   }
 
   return ok({ sites: existing.results ?? [] })
@@ -186,6 +232,19 @@ export async function createSite(
 ): Promise<ServiceResult<{ id: string; siteUrl: string }>> {
   if (!siteUrl) return err(400, "Missing siteUrl")
   await ensureGscSchema(env)
+  const isPro = await isBillingPro(env, userId)
+  if (!isPro) {
+    const existing = await env.DB.prepare(
+      `SELECT COUNT(*) as count
+       FROM gsc_sites
+       WHERE owner_user_id = ? AND enabled = 1`,
+    )
+      .bind(userId)
+      .first<{ count: number | null }>()
+    if ((existing?.count ?? 0) >= 1) {
+      return err(402, "Zenshi Pro is required to add more than 1 site.")
+    }
+  }
   let availableSites: { siteUrl: string; permissionLevel: string }[]
   try {
     availableSites = await listUserGscSites(env, userId)
@@ -1508,6 +1567,185 @@ export async function enqueueSync(
   return ok({ ok: true, siteId, daysQueued })
 }
 
+type ReseedCandidateRow = {
+  id: string
+  gsc_site_url: string
+  active_run_id: string | null
+  active_run_finished_at: string | null
+  last_synced_date: string | null
+  dates_synced: number | null
+  total_rows: number | null
+}
+
+function hasSeededData(row: ReseedCandidateRow) {
+  return Boolean(row.last_synced_date) || Number(row.dates_synced ?? 0) > 0 || Number(row.total_rows ?? 0) > 0
+}
+
+function hasPendingRun(row: ReseedCandidateRow) {
+  return Boolean(row.active_run_id) && row.active_run_finished_at === null
+}
+
+async function listReseedCandidates(
+  env: CloudflareEnv,
+  userId: string,
+) {
+  return env.DB.prepare(
+    `WITH log AS (
+       SELECT l.site_id,
+              SUM(l.rows) AS total_rows,
+              COUNT(DISTINCT CASE WHEN l.status = 'ok' THEN l.date END) AS dates_synced
+       FROM gsc_sync_log l
+       INNER JOIN gsc_sites s ON s.id = l.site_id
+       WHERE s.owner_user_id = ?
+       GROUP BY l.site_id
+     )
+     SELECT s.id, s.gsc_site_url,
+            ss.active_run_id, ss.active_run_finished_at, ss.last_synced_date,
+            log.dates_synced, log.total_rows
+     FROM gsc_sites s
+     LEFT JOIN gsc_sync_state ss ON ss.site_id = s.id
+     LEFT JOIN log ON log.site_id = s.id
+     WHERE s.owner_user_id = ?
+       AND s.enabled = 1
+     ORDER BY s.gsc_site_url ASC`,
+  )
+    .bind(userId, userId)
+    .all<ReseedCandidateRow>()
+}
+
+export async function reseedAccountDashboardData(
+  env: CloudflareEnv,
+  userId: string,
+): Promise<ServiceResult<{
+  ok: true
+  discoveredSites: number
+  eligibleSites: number
+  queuedSites: number
+  queuedSiteIds: string[]
+  queuedDays: number
+  skippedRunningSites: number
+  skippedReadySites: number
+}>> {
+  const discovered = await discoverUserSites(env, userId)
+  if (!discovered.ok) return discovered
+
+  const candidates = await listReseedCandidates(env, userId)
+  const rows = candidates.results ?? []
+  const queuedSiteIds: string[] = []
+  let queuedDays = 0
+  let skippedRunningSites = 0
+  let skippedReadySites = 0
+
+  for (const row of rows) {
+    if (hasPendingRun(row)) {
+      skippedRunningSites += 1
+      continue
+    }
+
+    if (hasSeededData(row)) {
+      skippedReadySites += 1
+      continue
+    }
+
+    const daysQueued = await enqueueSyncForSite(env, row.id)
+    if (daysQueued > 0) {
+      queuedSiteIds.push(row.id)
+      queuedDays += daysQueued
+    }
+  }
+
+  return ok({
+    ok: true,
+    discoveredSites: discovered.data.sites.length,
+    eligibleSites: Math.max(0, rows.length - skippedRunningSites - skippedReadySites),
+    queuedSites: queuedSiteIds.length,
+    queuedSiteIds,
+    queuedDays,
+    skippedRunningSites,
+    skippedReadySites,
+  })
+}
+
+export async function resetAccountDashboardData(
+  env: CloudflareEnv,
+  userId: string,
+): Promise<ServiceResult<{ ok: true }>> {
+  await ensureGscSchema(env)
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM gsc_share_branding
+       WHERE share_id IN (
+         SELECT id
+         FROM gsc_share_links
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_share_links
+       WHERE owner_user_id = ?`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_user_preferences
+       WHERE user_id = ?`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_site_folders
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_pages_daily
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_page_device_daily
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_queries_daily
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_sync_log
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_sync_state
+       WHERE site_id IN (
+         SELECT id
+         FROM gsc_sites
+         WHERE owner_user_id = ?
+       )`,
+    ).bind(userId),
+    env.DB.prepare(
+      `DELETE FROM gsc_folders
+       WHERE owner_user_id = ?`,
+    ).bind(userId),
+  ])
+
+  return ok({ ok: true })
+}
+
 function diffDaysInclusive(start: string, end: string): number {
   const startDate = new Date(`${start}T00:00:00Z`)
   const endDate = new Date(`${end}T00:00:00Z`)
@@ -1537,6 +1775,39 @@ type SyncRunView = {
   stallState: "normal" | "delayed" | "stalled"
   stallReason: string | null
   errorMessage: string | null
+}
+
+type SyncStatusPhase = "idle" | "bootstrapping" | "syncing" | "ready" | "error"
+
+type SyncStatusView = {
+  siteId: string
+  siteUrl: string
+  lastSyncedDate: string | null
+  status: string | null
+  errorMessage: string | null
+  updatedAt: string | null
+  backfillCursorDate: string | null
+  totalRows: number
+  datesSynced: number
+  truncatedDates: number
+  minDate: string | null
+  maxDate: string | null
+  isSyncing: boolean
+  retentionStart: string
+  retentionEnd: string
+  expectedDays: number
+  syncedDays: number
+  remainingDays: number
+  syncProgressPct: number
+  activeRun: SyncRunView | null
+  lastCompletedRun: SyncRunView | null
+  lastSuccessfulDataFreshThrough: string | null
+  lastVisibleDataUpdatedAt: string | null
+  healthSummary: "healthy" | "delayed" | "stalled" | "partial" | "error"
+  phase: SyncStatusPhase
+  hasData: boolean
+  needsReseed: boolean
+  bootstrapProgress: number | null
 }
 
 function asFiniteInt(value: unknown, fallback = 0) {
@@ -1578,6 +1849,62 @@ function deriveEtaSeconds(
   const unitsPerSecond = processedUnits / elapsedSeconds
   if (!Number.isFinite(unitsPerSecond) || unitsPerSecond <= 0) return null
   return Math.max(1, Math.round((totalUnits - processedUnits) / unitsPerSecond))
+}
+
+function deriveSyncPhase(args: {
+  activeRun: SyncRunView | null
+  lastCompletedRun: SyncRunView | null
+  status: string | null
+  hasData: boolean
+}): SyncStatusPhase {
+  if (args.activeRun) {
+    return args.hasData ? "syncing" : "bootstrapping"
+  }
+
+  if (args.lastCompletedRun?.state === "error" || args.status === "error") {
+    return args.hasData ? "ready" : "error"
+  }
+
+  if (!args.hasData) return "idle"
+  return "ready"
+}
+
+function buildAccountSyncSummary(statuses: SyncStatusView[]) {
+  const hasAnySites = statuses.length > 0
+  const activeStatuses = statuses.filter((status) => status.activeRun?.state && status.activeRun.state !== "queued")
+  const queuedStatuses = statuses.filter((status) => status.activeRun?.state === "queued")
+  const bootstrappingStatuses = statuses.filter((status) => status.phase === "bootstrapping" || (status.needsReseed && !status.hasData))
+  const needsReseedSites = statuses.filter((status) => status.needsReseed).length
+  const readySites = statuses.filter((status) => status.phase === "ready").length
+  const attentionSites = statuses.filter((status) => status.healthSummary !== "healthy").length
+  const progressValues = bootstrappingStatuses
+    .map((status) => status.bootstrapProgress)
+    .filter((value): value is number => value !== null)
+  const bootstrapProgress = progressValues.length > 0
+    ? Math.round(progressValues.reduce((sum, value) => sum + value, 0) / progressValues.length)
+    : null
+
+  let phase: SyncStatusPhase = "idle"
+  if (bootstrappingStatuses.some((status) => status.activeRun !== null)) {
+    phase = "bootstrapping"
+  } else if (activeStatuses.length > 0 || queuedStatuses.some((status) => status.hasData)) {
+    phase = "syncing"
+  } else if (hasAnySites && needsReseedSites === 0) {
+    phase = attentionSites > 0 && readySites === 0 ? "error" : "ready"
+  }
+
+  return {
+    phase,
+    hasAnySites,
+    needsReseed: needsReseedSites > 0,
+    totalSites: statuses.length,
+    activeSites: activeStatuses.length,
+    queuedSites: queuedStatuses.length,
+    readySites,
+    needsReseedSites,
+    attentionSites,
+    bootstrapProgress,
+  }
 }
 
 export function buildSyncStatusView(
@@ -1648,9 +1975,36 @@ export function buildSyncStatusView(
       }
     : null
 
+  const hasData =
+    syncedDays > 0
+    || asFiniteInt(row.total_rows) > 0
+    || lastSuccessfulDataFreshThrough !== null
   const activeRunStates = new Set(["queued", "preparing", "syncing", "finalizing"])
   const activeRun = runView && activeRunStates.has(runView.state) ? runView : null
   const lastCompletedRun = runView && !activeRunStates.has(runView.state) ? runView : null
+  const phase = deriveSyncPhase({
+    activeRun,
+    lastCompletedRun,
+    status: (row.status as string) ?? null,
+    hasData,
+  })
+  const needsReseed = !hasData && activeRun === null
+  const bootstrapProgress = phase === "bootstrapping"
+    ? activeRun?.progressPercent ?? 0
+    : phase === "ready" && !needsReseed
+      ? 100
+      : null
+
+  const healthSummary =
+    activeRun?.stallState === "stalled"
+      ? "stalled"
+      : activeRun?.stallState === "delayed"
+        ? "delayed"
+        : lastCompletedRun?.state === "error" || (!hasData && phase === "error")
+          ? "error"
+          : lastCompletedRun?.state === "partial"
+            ? "partial"
+            : "healthy"
 
   return {
     siteId: row.id as string,
@@ -1676,23 +2030,18 @@ export function buildSyncStatusView(
     lastCompletedRun,
     lastSuccessfulDataFreshThrough,
     lastVisibleDataUpdatedAt: updatedAt,
-    healthSummary:
-      activeRun?.stallState === "stalled"
-        ? "stalled"
-        : activeRun?.stallState === "delayed"
-          ? "delayed"
-          : lastCompletedRun?.state === "error"
-            ? "error"
-            : lastCompletedRun?.state === "partial"
-              ? "partial"
-              : "healthy",
-  }
+    healthSummary,
+    phase,
+    hasData,
+    needsReseed,
+    bootstrapProgress,
+  } satisfies SyncStatusView
 }
 
 export async function getSyncStatus(
   env: CloudflareEnv,
   userId: string,
-): Promise<ServiceResult<{ statuses: unknown[] }>> {
+): Promise<ServiceResult<{ statuses: SyncStatusView[]; summary: ReturnType<typeof buildAccountSyncSummary> }>> {
   await ensureGscSchema(env)
 
   const yesterday = getYesterdayUtcYmd()
@@ -1741,5 +2090,8 @@ export async function getSyncStatus(
     }),
   )
 
-  return ok({ statuses })
+  return ok({
+    statuses,
+    summary: buildAccountSyncSummary(statuses),
+  })
 }
