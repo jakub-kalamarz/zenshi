@@ -1,5 +1,4 @@
 import { ensureGscSchema } from "@/lib/gsc-schema"
-import { isBillingPro } from "@/lib/billing"
 import {
   listUserGscSites,
   MissingGoogleAccountError,
@@ -174,16 +173,11 @@ async function discoverUserSites(
   const existingIdsByUrl = new Map(
     (existing.results ?? []).map((row) => [row.gsc_site_url, row.id]),
   )
-  const existingSiteCount = existingIdsByUrl.size
-  const isPro = await isBillingPro(env, userId)
   const discovered = new Map<string, DiscoveredSiteRecord>()
 
   for (const site of remoteSites) {
     const normalized = normalizeGscSiteUrl(site.siteUrl)
     if (!normalized || discovered.has(normalized)) continue
-    if (!isPro && !existingIdsByUrl.has(normalized) && existingSiteCount + discovered.size >= 1) {
-      continue
-    }
 
     const id = existingIdsByUrl.get(normalized) ?? crypto.randomUUID()
     await env.DB.prepare(
@@ -232,19 +226,6 @@ export async function createSite(
 ): Promise<ServiceResult<{ id: string; siteUrl: string }>> {
   if (!siteUrl) return err(400, "Missing siteUrl")
   await ensureGscSchema(env)
-  const isPro = await isBillingPro(env, userId)
-  if (!isPro) {
-    const existing = await env.DB.prepare(
-      `SELECT COUNT(*) as count
-       FROM gsc_sites
-       WHERE owner_user_id = ? AND enabled = 1`,
-    )
-      .bind(userId)
-      .first<{ count: number | null }>()
-    if ((existing?.count ?? 0) >= 1) {
-      return err(402, "Zenshi Pro is required to add more than 1 site.")
-    }
-  }
   let availableSites: { siteUrl: string; permissionLevel: string }[]
   try {
     availableSites = await listUserGscSites(env, userId)
