@@ -2,8 +2,24 @@ import openNext from "./.open-next/worker.js"
 import { enqueueDailySync, processSyncBatch } from "./lib/gsc-sync"
 import type { GscSyncMessage } from "./lib/gsc-sync"
 
+function fixEncodedQueryString(request: Request): Request {
+  const url = new URL(request.url)
+  const encodedQMark = url.pathname.search(/%3f/i)
+  if (encodedQMark === -1) return request
+  const realPath = url.pathname.slice(0, encodedQMark)
+  const queryPart = url.pathname.slice(encodedQMark + 3)
+  url.pathname = realPath
+  const extraParams = new URLSearchParams(queryPart)
+  for (const [key, value] of extraParams) {
+    url.searchParams.set(key, value)
+  }
+  return new Request(url, request)
+}
+
 const worker = {
-  fetch: openNext.fetch,
+  fetch(request: Request, env: CloudflareEnv, ctx: ExecutionContext) {
+    return openNext.fetch(fixEncodedQueryString(request), env, ctx)
+  },
   async scheduled(_event: unknown, env: CloudflareEnv, ctx: { waitUntil: (promise: Promise<unknown>) => void }) {
     ctx.waitUntil(enqueueDailySync(env))
   },
