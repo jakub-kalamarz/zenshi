@@ -2,6 +2,10 @@ import { getCloudflareContext } from "@opennextjs/cloudflare"
 import { ensureGscSchema } from "@/lib/gsc-schema"
 import { filterAllowedSiteIds, resolveShareByToken } from "@/lib/gsc-share"
 import { loadShareSiteCards } from "@/lib/gsc-share-data"
+import {
+  buildPublicSharePreviewSiteCardsPayload,
+  isPublicSharePreviewToken,
+} from "@/lib/public-share-preview"
 
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as {
@@ -18,6 +22,10 @@ export async function POST(request: Request) {
   const end = body?.end?.trim()
   if (!start || !end) {
     return new Response("Missing start/end", { status: 400 })
+  }
+
+  if (isPublicSharePreviewToken(body?.token ?? null)) {
+    return Response.json(buildPublicSharePreviewSiteCardsPayload())
   }
 
   const { env } = await getCloudflareContext({ async: true })

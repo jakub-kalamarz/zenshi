@@ -1124,6 +1124,9 @@ export async function deleteAccountForUser(
     ).bind(userId),
     env.DB.prepare(`DELETE FROM gsc_share_links WHERE owner_user_id = ?`).bind(userId),
     env.DB.prepare(`DELETE FROM gsc_user_preferences WHERE user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM gsc_notification_preferences WHERE user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM gsc_notification_devices WHERE user_id = ?`).bind(userId),
+    env.DB.prepare(`DELETE FROM gsc_notification_events WHERE user_id = ?`).bind(userId),
     env.DB.prepare(
       `DELETE FROM gsc_site_folders
        WHERE site_id IN (

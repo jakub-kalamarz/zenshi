@@ -1,6 +1,7 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
+import { getMobileDemoSitesResponse, isMobileDemoUser } from "@/lib/mobile-demo-data"
 import { requireMobileSession } from "@/lib/mobile-auth"
-import { mobileError, mobileFromService, handleMobileOptions } from "@/lib/mobile-http"
+import { mobileError, mobileFromService, handleMobileOptions, mobileJson } from "@/lib/mobile-http"
 import { createSite, listSites, updateSiteFolder } from "@/lib/gsc-service"
 
 export async function GET(request: Request) {
@@ -11,6 +12,9 @@ export async function GET(request: Request) {
   const session = await requireMobileSession(env, request)
   if (!session) {
     return mobileError("UNAUTHORIZED", "Unauthorized", request, env, 401)
+  }
+  if (isMobileDemoUser(session.user)) {
+    return mobileJson(getMobileDemoSitesResponse(), request, env)
   }
 
   const refresh = new URL(request.url).searchParams.get("refresh") === "1"

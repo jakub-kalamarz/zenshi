@@ -73,5 +73,6 @@ export async function POST(request: Request) {
     },
     request,
     env,
+    { status: 201 },
   )
 }

@@ -2,7 +2,10 @@ import assert from "node:assert/strict"
 import { mock } from "bun:test"
 
 const ensureAuthSchema = mock(async () => {})
-const signInWithGoogle = mock(async () => ({ id: "user-1" }))
+const signInWithGoogle = mock(async () => ({
+  user: { id: "user-1" },
+  accountMode: "existing_email" as const,
+}))
 const consumeOauthState = mock(async () => ({
   verifier: "verifier-123",
   purpose: "signin" as const,
@@ -86,9 +89,29 @@ const routeModule = await import("../app/api/mobile/v1/auth/callback/route")
   assert.equal(response.headers.get("location"), "zenshi://auth?code=login-code-123")
 }
 
-assert.equal(ensureAuthSchema.mock.calls.length, 1)
-assert.equal(consumeOauthState.mock.calls.length, 1)
-assert.equal(exchangeGoogleCode.mock.calls.length, 1)
-assert.equal(createLoginCode.mock.calls.length, 1)
+{
+  const request = new Request(
+    "http://localhost/api/mobile/v1/auth/callback?code=google-code&state=oauth-state&format=json",
+    {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+      },
+    },
+  )
+
+  const response = await routeModule.GET(request)
+  assert.equal(response.status, 200)
+
+  const payload = await response.json()
+  assert.equal(payload.ok, true)
+  assert.equal(payload.data.code, "login-code-123")
+  assert.equal(payload.data.accountMode, "existing_email")
+}
+
+assert.equal(ensureAuthSchema.mock.calls.length, 2)
+assert.equal(consumeOauthState.mock.calls.length, 2)
+assert.equal(exchangeGoogleCode.mock.calls.length, 2)
+assert.equal(createLoginCode.mock.calls.length, 2)
 
 console.log("mobile-auth-callback-route spec passed")

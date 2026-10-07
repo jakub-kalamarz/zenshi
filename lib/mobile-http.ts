@@ -78,6 +78,7 @@ export function handleMobileOptions(request: Request, env: MobileEnv) {
 
 function mapStatusToCode(status: number) {
   if (status === 401) return "UNAUTHORIZED"
+  if (status === 402) return "PRO_REQUIRED_SITE_LIMIT"
   if (status === 403) return "FORBIDDEN"
   if (status === 404) return "NOT_FOUND"
   if (status === 409) return "CONFLICT"

@@ -2,6 +2,10 @@ import { getCloudflareContext } from "@opennextjs/cloudflare"
 import { ensureGscSchema } from "@/lib/gsc-schema"
 import { resolveShareByToken, resolveTargetSiteId } from "@/lib/gsc-share"
 import { loadShareSiteDetail } from "@/lib/gsc-share-data"
+import {
+  buildPublicSharePreviewSiteDetailPayload,
+  isPublicSharePreviewToken,
+} from "@/lib/public-share-preview"
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
@@ -11,6 +15,14 @@ export async function GET(request: Request) {
 
   if (!start || !end) {
     return new Response("Missing start/end", { status: 400 })
+  }
+
+  if (isPublicSharePreviewToken(token)) {
+    const payload = buildPublicSharePreviewSiteDetailPayload(searchParams.get("siteId"))
+    if (!payload) {
+      return new Response("Site out of share scope", { status: 403 })
+    }
+    return Response.json(payload)
   }
 
   const { env } = await getCloudflareContext({ async: true })

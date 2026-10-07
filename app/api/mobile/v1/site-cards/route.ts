@@ -1,4 +1,5 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
+import { getMobileDemoSiteCardsResponse, isMobileDemoUser } from "@/lib/mobile-demo-data"
 import { requireMobileSession } from "@/lib/mobile-auth"
 import { mobileError, mobileFromService, handleMobileOptions, mobileJson } from "@/lib/mobile-http"
 import { getSiteCardsData, parseSiteCardsRequest } from "@/lib/gsc-service"
@@ -16,6 +17,9 @@ export async function POST(request: Request) {
   const parsedBody = parseSiteCardsRequest(await request.json())
   if (!parsedBody) {
     return mobileError("VALIDATION_ERROR", "Missing siteIds/start/end", request, env, 400)
+  }
+  if (isMobileDemoUser(session.user)) {
+    return mobileJson(getMobileDemoSiteCardsResponse(parsedBody.siteIds), request, env)
   }
 
   const result = await getSiteCardsData(env, session.user.id, parsedBody)

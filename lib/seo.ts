@@ -29,7 +29,7 @@ export const SEO_CONFIG: SeoConfig = {
     pl: "pl_PL",
     de: "de_DE",
   },
-  ogImagePath: "/opengraph-image",
+  ogImagePath: "/loginPhoto.jpg",
 };
 
 export function getSiteUrl(): URL {

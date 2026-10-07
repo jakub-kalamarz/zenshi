@@ -756,8 +756,7 @@ export function GscDashboard() {
   }, [folderDeleteId, loadFolders, t]);
 
   const syncSites = useCallback(async (targetSites: Site[]) => {
-    for (let i = 0; i < targetSites.length; i += 1) {
-      const site = targetSites[i];
+    await Promise.all(targetSites.map(async (site) => {
       const name = displaySiteName(site.gsc_site_url);
       const siteToastId = toast.loading(t("syncingSite", { name }), {
         duration: Infinity,
@@ -783,7 +782,7 @@ export function GscDashboard() {
       toast.success(t("syncStartedForSite", { name }), {
         id: siteToastId,
       });
-    }
+    }));
   }, [t]);
 
   const syncOneSite = useCallback(

@@ -1,6 +1,6 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
 import { signInWithApple } from "@/lib/auth"
-import { verifyAppleIdentityToken } from "@/lib/apple-auth"
+import { getAppleNativeClientId, verifyAppleIdentityToken } from "@/lib/apple-auth"
 import { ensureAuthSchema } from "@/lib/auth-schema"
 import { buildMobileSession, issueApiToken } from "@/lib/mobile-auth"
 import { handleMobileOptions, mobileError, mobileJson } from "@/lib/mobile-http"
@@ -25,7 +25,9 @@ export async function POST(request: Request) {
 
   let identity
   try {
-    identity = await verifyAppleIdentityToken(env, identityToken)
+    identity = await verifyAppleIdentityToken(env, identityToken, {
+      expectedAudiences: [getAppleNativeClientId(env)],
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Apple sign-in failed"
     return mobileError("OAUTH_ERROR", message, request, env, 400)
@@ -55,4 +57,3 @@ export async function POST(request: Request) {
     env,
   )
 }
-

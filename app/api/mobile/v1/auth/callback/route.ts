@@ -169,8 +169,8 @@ export async function GET(request: Request) {
     })
   }
 
-  const signedInUser = await signInWithGoogle(env, userInfo, tokenData)
-  const userId = signedInUser.id
+  const signedIn = await signInWithGoogle(env, userInfo, tokenData)
+  const userId = signedIn.user.id
   const loginCode = await createLoginCode(env, userId)
 
   const user = {
@@ -181,7 +181,7 @@ export async function GET(request: Request) {
   }
 
   if (wantsJson(request)) {
-    return mobileJson({ code: loginCode, user }, request, env)
+    return mobileJson({ code: loginCode, user, accountMode: signedIn.accountMode }, request, env)
   }
 
   const scheme = (env as CloudflareEnv & { MOBILE_APP_SCHEME?: string }).MOBILE_APP_SCHEME || "zenshi"

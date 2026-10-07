@@ -138,7 +138,7 @@ function makeAuthedRequest(path: string) {
       label: "phone",
     }),
   )
-  assert.equal(response.status, 200)
+  assert.equal(response.status, 201)
   const payload = (await response.json()) as { ok: boolean; data: { token: string } }
   assert.equal(payload.ok, true)
   assert.equal(typeof payload.data.token, "string")

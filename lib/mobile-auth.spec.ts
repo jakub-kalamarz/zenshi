@@ -99,4 +99,32 @@ env.DB.prepare(`DELETE FROM auth_accounts WHERE user_id = ? AND provider = 'goog
 const verifiedSessionWithoutGoogle = await verifyApiToken(env, issuedToken.token)
 assert.deepEqual(verifiedSessionWithoutGoogle?.googleAccounts, [])
 
+const demoEnv = {
+  DB: createFakeDb({
+    auth_users: [{
+      id: "demo-user-1",
+      email: "review@zenshi.dev",
+      name: "App Review",
+      image: null,
+    }],
+  }),
+} as { DB: ReturnType<typeof createFakeDb> }
+
+const demoToken = await issueApiToken(demoEnv, "demo-user-1", "iPhone")
+const verifiedDemoSession = await verifyApiToken(demoEnv, demoToken.token)
+assert.deepEqual(verifiedDemoSession?.googleAccounts, [
+  {
+    accountId: "demo-google-account-primary",
+    email: "review@zenshi.dev",
+    name: "App Review",
+    image: null,
+  },
+  {
+    accountId: "demo-google-account-team",
+    email: "review-team@zenshi.dev",
+    name: "Review Team",
+    image: null,
+  },
+])
+
 console.log("mobile-auth spec passed")

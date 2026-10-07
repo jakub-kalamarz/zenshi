@@ -1,5 +1,6 @@
 type AppleEnv = CloudflareEnv & {
   AUTH_APPLE_CLIENT_ID?: string
+  AUTH_APPLE_NATIVE_CLIENT_ID?: string
   AUTH_APPLE_TEAM_ID?: string
   AUTH_APPLE_KEY_ID?: string
   AUTH_APPLE_PRIVATE_KEY?: string
@@ -123,6 +124,10 @@ async function readPrivateKeyFromPath(filePath: string | null | undefined) {
 
 export function getAppleClientId(env: AppleEnv) {
   return readAppleConfig(env).clientId ?? null
+}
+
+export function getAppleNativeClientId(env: AppleEnv) {
+  return env.AUTH_APPLE_NATIVE_CLIENT_ID ?? process.env.AUTH_APPLE_NATIVE_CLIENT_ID ?? "us.swiftapps.zenshi"
 }
 
 export function ensureAppleClientId(env: AppleEnv) {
@@ -252,15 +257,19 @@ async function verifyAppleJwt(identityToken: string) {
   return payload
 }
 
-export async function verifyAppleIdentityToken(env: AppleEnv, identityToken: string) {
+export async function verifyAppleIdentityToken(
+  env: AppleEnv,
+  identityToken: string,
+  options?: { expectedAudiences?: string[] },
+) {
   const payload = await verifyAppleJwt(identityToken)
-  const clientId = ensureAppleClientId(env)
+  const expectedAudiences = options?.expectedAudiences?.filter(Boolean) ?? [ensureAppleClientId(env)]
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud]
 
   if (payload.iss !== APPLE_ISSUER) {
     throw new Error("Apple identity token issuer is invalid")
   }
-  if (!audiences.includes(clientId)) {
+  if (!expectedAudiences.some((candidate) => audiences.includes(candidate))) {
     throw new Error("Apple identity token audience is invalid")
   }
   if (!payload.sub) {

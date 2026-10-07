@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import {
   buildSyncDashboardSummary,
   describeSyncCardState,
+  sortSyncStatuses,
   type SyncStatus,
 } from "./sync-dashboard"
 
@@ -145,6 +146,64 @@ assert.equal(summary.activeCount, 2)
 assert.equal(summary.queuedCount, 1)
 assert.equal(summary.attentionCount, 1)
 assert.equal(summary.freshestDate, "2026-03-08")
+
+const fallbackSummary = buildSyncDashboardSummary([
+  {
+    ...statuses[0],
+    siteId: "site-4",
+    activeRun: null,
+    isSyncing: true,
+    status: "syncing",
+    healthSummary: "healthy",
+  },
+  {
+    ...statuses[1],
+    siteId: "site-5",
+    activeRun: null,
+    isSyncing: false,
+    status: "queued",
+    healthSummary: "delayed",
+  },
+])
+assert.equal(fallbackSummary.activeCount, 1)
+assert.equal(fallbackSummary.queuedCount, 1)
+assert.equal(fallbackSummary.attentionCount, 1)
+
+const sortedSiteIds = sortSyncStatuses([
+  {
+    ...statuses[0],
+    siteId: "healthy",
+    activeRun: null,
+    isSyncing: false,
+    status: "ok",
+    healthSummary: "healthy",
+    updatedAt: "2026-03-12T10:05:00.000Z",
+  },
+  {
+    ...statuses[0],
+    siteId: "active-no-run",
+    activeRun: null,
+    isSyncing: true,
+    status: "syncing",
+    healthSummary: "healthy",
+    updatedAt: "2026-03-12T10:04:00.000Z",
+  },
+  {
+    ...statuses[1],
+    siteId: "queued",
+    activeRun: null,
+    isSyncing: false,
+    status: "queued",
+    healthSummary: "healthy",
+    updatedAt: "2026-03-12T10:03:00.000Z",
+  },
+  {
+    ...statuses[2],
+    siteId: "attention",
+    updatedAt: "2026-03-12T10:02:00.000Z",
+  },
+]).map((site) => site.siteId)
+assert.deepEqual(sortedSiteIds, ["attention", "active-no-run", "queued", "healthy"])
 
 const activeDescription = describeSyncCardState(statuses[0])
 assert.equal(activeDescription.tone, "active")

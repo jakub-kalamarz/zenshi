@@ -1,6 +1,7 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
+import { getMobileDemoPagesResponseForSite, isMobileDemoUser } from "@/lib/mobile-demo-data"
 import { requireMobileSession } from "@/lib/mobile-auth"
-import { mobileError, mobileFromService, handleMobileOptions } from "@/lib/mobile-http"
+import { mobileError, mobileFromService, handleMobileOptions, mobileJson } from "@/lib/mobile-http"
 import { getPagesData } from "@/lib/gsc-service"
 
 export async function GET(request: Request) {
@@ -14,6 +15,10 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url)
+  if (isMobileDemoUser(session.user)) {
+    return mobileJson(getMobileDemoPagesResponseForSite(searchParams.get("siteId")), request, env)
+  }
+
   const result = await getPagesData(env, session.user.id, {
     siteId: searchParams.get("siteId"),
     start: searchParams.get("start"),

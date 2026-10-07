@@ -23,13 +23,43 @@ const createShare = mock(async () => ({ ok: true, data: { id: "share-1", scopeTy
 const updateShare = mock(async () => ({ ok: true, data: { ok: true } }))
 const deleteShare = mock(async () => ({ ok: true, data: { ok: true } }))
 const enqueueSync = mock(async () => ({ ok: true, data: { ok: true, siteId: "site-1", daysQueued: 42 } }))
+const resetAccountDashboardData = mock(async () => ({ ok: true, data: { ok: true } }))
+const reseedAccountDashboardData = mock(async () => ({
+  ok: true,
+  data: {
+    ok: true,
+    discoveredSites: 2,
+    eligibleSites: 2,
+    queuedSites: 2,
+    queuedSiteIds: ["site-1", "site-2"],
+    queuedDays: 84,
+    skippedRunningSites: 0,
+    skippedReadySites: 0,
+  },
+}))
 const getSyncStatus = mock(async () => ({
   ok: true,
   data: {
+    summary: {
+      phase: "bootstrapping",
+      hasAnySites: true,
+      needsReseed: false,
+      totalSites: 1,
+      activeSites: 1,
+      queuedSites: 0,
+      readySites: 0,
+      needsReseedSites: 0,
+      attentionSites: 0,
+      bootstrapProgress: 64,
+    },
     statuses: [{
       siteId: "site-1",
       syncProgressPct: 100,
       lastSuccessfulDataFreshThrough: "2026-03-08",
+      phase: "bootstrapping",
+      hasData: false,
+      needsReseed: false,
+      bootstrapProgress: 64,
       activeRun: {
         runId: "run-1",
         state: "syncing",
@@ -83,6 +113,8 @@ mock.module("@/lib/gsc-service", () => ({
   updateShare,
   deleteShare,
   enqueueSync,
+  resetAccountDashboardData,
+  reseedAccountDashboardData,
   getSyncStatus,
 }))
 
@@ -91,6 +123,7 @@ const foldersRoute = await import("../app/api/mobile/v1/folders/route")
 const siteCardsRoute = await import("../app/api/mobile/v1/site-cards/route")
 const sharesRoute = await import("../app/api/mobile/v1/shares/route")
 const syncRoute = await import("../app/api/mobile/v1/sync/route")
+const syncReseedRoute = await import("../app/api/mobile/v1/sync/reseed/route")
 const syncStatusRoute = await import("../app/api/mobile/v1/sync/status/route")
 
 function makeAuthedJsonRequest(path: string, method: string, body?: unknown) {
@@ -161,14 +194,41 @@ function makeAuthedJsonRequest(path: string, method: string, body?: unknown) {
 }
 
 {
+  const response = await syncRoute.DELETE(
+    makeAuthedJsonRequest("/api/mobile/v1/sync", "DELETE"),
+  )
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.ok, true)
+  assert.equal(payload.data.ok, true)
+  assert.equal(resetAccountDashboardData.mock.calls.length, 1)
+}
+
+{
+  const response = await syncReseedRoute.POST(
+    makeAuthedJsonRequest("/api/mobile/v1/sync/reseed", "POST"),
+  )
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.ok, true)
+  assert.equal(payload.data.queuedSites, 2)
+  assert.equal(payload.data.queuedDays, 84)
+  assert.equal(reseedAccountDashboardData.mock.calls.length, 1)
+}
+
+{
   const response = await syncStatusRoute.GET(
     makeAuthedJsonRequest("/api/mobile/v1/sync/status", "GET"),
   )
   assert.equal(response.status, 200)
   const payload = await response.json()
   assert.equal(payload.ok, true)
+  assert.equal(payload.data.summary.phase, "bootstrapping")
+  assert.equal(payload.data.summary.bootstrapProgress, 64)
   assert.equal(payload.data.statuses[0].syncProgressPct, 100)
   assert.equal(payload.data.statuses[0].lastSuccessfulDataFreshThrough, "2026-03-08")
+  assert.equal(payload.data.statuses[0].phase, "bootstrapping")
+  assert.equal(payload.data.statuses[0].bootstrapProgress, 64)
   assert.equal(payload.data.statuses[0].activeRun.runId, "run-1")
   assert.equal(payload.data.statuses[0].activeRun.etaSeconds, 354)
 }

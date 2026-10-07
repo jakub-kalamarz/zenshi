@@ -1,4 +1,6 @@
 import { ensureAuthSchema } from "@/lib/auth-schema"
+import { getBillingStatus, type BillingStatus } from "@/lib/billing"
+import { getMobileDemoGoogleAccounts } from "@/lib/mobile-demo-data"
 
 type MobileEnv = CloudflareEnv & {
   MOBILE_TOKEN_TTL_DAYS?: string
@@ -33,6 +35,7 @@ export type MobileSession = {
   tokenId: string
   expiresAt: string | null
   googleAccounts: MobileConnectedGoogleAccount[]
+  billing: BillingStatus
 }
 
 const DEFAULT_TOKEN_TTL_DAYS = 90
@@ -176,10 +179,23 @@ export async function buildMobileSession(
     expiresAt: string | null
   },
 ): Promise<MobileSession> {
-  const googleAccounts = await findLinkedGoogleAccounts(env, session.user.id)
+  const demoGoogleAccounts = getMobileDemoGoogleAccounts(session.user)
+  if (demoGoogleAccounts.length > 0) {
+    return {
+      ...session,
+      googleAccounts: demoGoogleAccounts,
+      billing: { plan: "pro", entitlement: "zenshi_pro", active: true },
+    }
+  }
+
+  const [googleAccounts, billing] = await Promise.all([
+    findLinkedGoogleAccounts(env, session.user.id),
+    getBillingStatus(env, session.user.id),
+  ])
   return {
     ...session,
     googleAccounts,
+    billing,
   }
 }
 

@@ -58,6 +58,7 @@ cp wrangler.toml.example wrangler.toml
 - `AUTH_GOOGLE_ID`
 - `AUTH_GOOGLE_SECRET`
 - `AUTH_APPLE_CLIENT_ID`
+- `AUTH_APPLE_NATIVE_CLIENT_ID` for iOS token validation, defaults to `us.swiftapps.zenshi`
 - `AUTH_APPLE_TEAM_ID`
 - `AUTH_APPLE_KEY_ID`
 - `AUTH_APPLE_PRIVATE_KEY` or `AUTH_APPLE_PRIVATE_KEY_B64` or `AUTH_APPLE_PRIVATE_KEY_PATH`

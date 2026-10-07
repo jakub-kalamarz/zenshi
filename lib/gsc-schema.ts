@@ -102,6 +102,42 @@ const schemaStatements = [
     compare_range_end TEXT,
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
   );`,
+  `CREATE TABLE IF NOT EXISTS gsc_notification_preferences (
+    user_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    delivery_mode TEXT NOT NULL DEFAULT 'digest',
+    monitored_site_ids TEXT NOT NULL DEFAULT '[]',
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  );`,
+  `CREATE TABLE IF NOT EXISTS gsc_notification_devices (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    platform TEXT NOT NULL DEFAULT 'ios',
+    token TEXT NOT NULL UNIQUE,
+    authorization_status TEXT NOT NULL DEFAULT 'unknown',
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  );`,
+  `CREATE INDEX IF NOT EXISTS idx_gsc_notification_devices_user
+    ON gsc_notification_devices(user_id, updated_at DESC);`,
+  `CREATE TABLE IF NOT EXISTS gsc_notification_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    site_id TEXT,
+    delivery_mode TEXT NOT NULL,
+    freshness_date TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    site_ids_json TEXT NOT NULL DEFAULT '[]',
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    opened_at DATETIME,
+    sent_at DATETIME,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+  );`,
+  `CREATE INDEX IF NOT EXISTS idx_gsc_notification_events_user_status
+    ON gsc_notification_events(user_id, status, created_at DESC);`,
   `CREATE TABLE IF NOT EXISTS gsc_folders (
     id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL,
@@ -182,6 +218,9 @@ const REQUIRED_TABLES = [
   "gsc_sync_state",
   "gsc_sync_log",
   "gsc_user_preferences",
+  "gsc_notification_preferences",
+  "gsc_notification_devices",
+  "gsc_notification_events",
   "gsc_folders",
   "gsc_site_folders",
   "gsc_share_links",
