@@ -1,6 +1,5 @@
 import openNext from "./.open-next/worker.js"
-import { enqueueDailySync, processSyncBatch } from "./lib/gsc-sync"
-import type { GscSyncMessage } from "./lib/gsc-sync"
+import { enqueueDailySync, processSyncBatch, syncMessageKey, type GscSyncMessage } from "./lib/gsc-sync"
 
 function fixEncodedQueryString(request: Request): Request {
   const url = new URL(request.url)
@@ -45,12 +44,12 @@ const worker = {
 
     for (let i = 0; i < batch.messages.length; i++) {
       const msg = syncMessages[i]
-      const key = `${msg.siteId}:${msg.startDate}:${msg.endDate}`
+      const key = syncMessageKey(msg)
       const result = results.get(key)
       if (result?.ok) {
         batch.messages[i].ack()
       } else {
-        batch.messages[i].retry({ delaySeconds: 60 })
+        batch.messages[i].retry({ delaySeconds: 20 })
       }
     }
   },

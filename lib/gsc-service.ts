@@ -208,11 +208,18 @@ export async function listSites(
   let existing = await fetchSiteRows(env, userId)
 
   if (refresh || (existing.results?.length ?? 0) === 0) {
+    const existingIds = new Set((existing.results ?? []).map((r) => String(r.id)))
     const discovered = await discoverUserSites(env, userId)
     if (!discovered.ok && (existing.results?.length ?? 0) === 0) return discovered
     if (discovered.ok) {
       existing = await fetchSiteRows(env, userId)
-      await enqueueDailySync(env)
+      const newSiteIds = discovered.data.sites
+        .filter((s) => !existingIds.has(s.id))
+        .map((s) => s.id)
+      if (newSiteIds.length > 0) {
+        // Independent per site, so run them together rather than one after another inside the request.
+        await Promise.allSettled(newSiteIds.map((siteId) => enqueueSyncForSite(env, siteId)))
+      }
     }
   }
 
@@ -1789,6 +1796,8 @@ type SyncStatusView = {
   hasData: boolean
   needsReseed: boolean
   bootstrapProgress: number | null
+  recentReady: boolean
+  syncStage: "recent" | "backfill" | "idle"
 }
 
 function asFiniteInt(value: unknown, fallback = 0) {
@@ -1888,6 +1897,8 @@ function buildAccountSyncSummary(statuses: SyncStatusView[]) {
   }
 }
 
+const RECENT_READY_DAYS = 28
+
 export function buildSyncStatusView(
   row: SyncStatusRow,
   options: {
@@ -1970,6 +1981,11 @@ export function buildSyncStatusView(
     hasData,
   })
   const needsReseed = !hasData && activeRun === null
+  // The first sync works newest first, so once a month of days is in, the dashboard window is usable
+  // even though older history is still arriving.
+  const recentReady = hasData && syncedDays >= Math.min(RECENT_READY_DAYS, options.expectedDays)
+  const syncStage: "recent" | "backfill" | "idle" =
+    activeRun === null && phase !== "bootstrapping" ? "idle" : recentReady ? "backfill" : "recent"
   const bootstrapProgress = phase === "bootstrapping"
     ? activeRun?.progressPercent ?? 0
     : phase === "ready" && !needsReseed
@@ -2016,6 +2032,8 @@ export function buildSyncStatusView(
     hasData,
     needsReseed,
     bootstrapProgress,
+    recentReady,
+    syncStage,
   } satisfies SyncStatusView
 }
 

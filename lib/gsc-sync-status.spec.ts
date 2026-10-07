@@ -41,6 +41,47 @@ assert.equal(active.activeRun?.dataFreshThrough, "2026-03-08")
 assert.equal(active.activeRun?.stallState, "normal")
 assert.equal(active.activeRun?.etaSeconds, 354)
 assert.equal(active.lastCompletedRun, null)
+assert.equal(active.phase, "syncing")
+assert.equal(active.hasData, true)
+assert.equal(active.needsReseed, false)
+assert.equal(active.bootstrapProgress, null)
+assert.equal(active.recentReady, true)
+assert.equal(active.syncStage, "backfill")
+
+const firstSync = buildSyncStatusView(
+  {
+    id: "site-2",
+    gsc_site_url: "sc-domain:new.example.com",
+    last_synced_date: "2026-03-08",
+    status: "ok",
+    error_message: null,
+    updated_at: "2026-03-12T10:10:00.000Z",
+    backfill_cursor_date: null,
+    total_rows: 100,
+    dates_synced: 10,
+    truncated_dates: 0,
+    min_date: "2026-02-27",
+    max_date: "2026-03-08",
+    active_run_id: "run-2",
+    active_run_state: "syncing",
+    active_run_started_at: "2026-03-12T10:00:00.000Z",
+    active_run_last_progress_at: "2026-03-12T10:10:00.000Z",
+    active_run_finished_at: null,
+    active_run_total_units: 175,
+    active_run_processed_units: 10,
+    active_run_warning_count: 0,
+    active_run_error_count: 0,
+  },
+  {
+    expectedDays: 175,
+    retentionStart: "2025-09-01",
+    retentionEnd: "2026-03-08",
+    nowMs: new Date("2026-03-12T10:10:30.000Z").getTime(),
+  },
+)
+
+assert.equal(firstSync.recentReady, false)
+assert.equal(firstSync.syncStage, "recent")
 
 const queued = buildSyncStatusView(
   {
@@ -78,6 +119,10 @@ assert.equal(queued.activeRun?.state, "queued")
 assert.equal(queued.activeRun?.etaSeconds, null)
 assert.equal(queued.activeRun?.stallState, "normal")
 assert.equal(queued.lastSuccessfulDataFreshThrough, "2026-03-05")
+assert.equal(queued.phase, "syncing")
+assert.equal(queued.hasData, true)
+assert.equal(queued.needsReseed, false)
+assert.equal(queued.bootstrapProgress, null)
 
 const stalled = buildSyncStatusView(
   {
@@ -115,5 +160,48 @@ assert.equal(stalled.activeRun, null)
 assert.equal(stalled.lastCompletedRun?.state, "error")
 assert.equal(stalled.lastCompletedRun?.stallState, "stalled")
 assert.equal(stalled.lastCompletedRun?.errorMessage, "Rate limited")
+assert.equal(stalled.phase, "ready")
+assert.equal(stalled.hasData, true)
+assert.equal(stalled.needsReseed, false)
+assert.equal(stalled.bootstrapProgress, 100)
+
+const needsReseed = buildSyncStatusView(
+  {
+    id: "site-4",
+    gsc_site_url: "sc-domain:fresh.example",
+    last_synced_date: null,
+    status: "ok",
+    error_message: null,
+    updated_at: "2026-03-12T10:00:00.000Z",
+    backfill_cursor_date: null,
+    total_rows: 0,
+    dates_synced: 0,
+    truncated_dates: 0,
+    min_date: null,
+    max_date: null,
+    active_run_id: null,
+    active_run_state: null,
+    active_run_started_at: null,
+    active_run_last_progress_at: null,
+    active_run_finished_at: null,
+    active_run_total_units: 0,
+    active_run_processed_units: 0,
+    active_run_warning_count: 0,
+    active_run_error_count: 0,
+  },
+  {
+    expectedDays: 175,
+    retentionStart: "2025-09-01",
+    retentionEnd: "2026-03-08",
+    nowMs: new Date("2026-03-12T10:10:30.000Z").getTime(),
+  },
+)
+
+assert.equal(needsReseed.phase, "idle")
+assert.equal(needsReseed.hasData, false)
+assert.equal(needsReseed.needsReseed, true)
+assert.equal(needsReseed.bootstrapProgress, null)
+assert.equal(needsReseed.recentReady, false)
+assert.equal(needsReseed.syncStage, "idle")
 
 console.log("gsc-sync-status spec passed")

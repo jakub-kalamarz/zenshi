@@ -4,6 +4,7 @@ name = "zenshi"
 compatibility_date = "2026-02-04"
 compatibility_flags = [ "nodejs_compat" ]
 workers_dev = true
+minify = true
 
 [assets]
 directory = ".open-next/assets"
@@ -13,6 +14,7 @@ binding = "ASSETS"
 AUTH_URL = "https://zenshi.dev"
 AUTH_TRUST_HOST = "true"
 AUTH_APPLE_CLIENT_ID = "us.swiftapps.zenshi.web"
+AUTH_APPLE_NATIVE_CLIENT_ID = "us.swiftapps.zenshi"
 AUTH_APPLE_TEAM_ID = "CJ382RZ845"
 AUTH_APPLE_KEY_ID = "JKR8MH37J6"
 NEXT_PUBLIC_SITE_URL = "https://zenshi.dev"
@@ -40,7 +42,7 @@ producers = [
 ]
 
 consumers = [
-  { queue = "gsc-sync", max_batch_size = 5, max_batch_timeout = 5, max_retries = 3, max_concurrency = 3 }
+  { queue = "gsc-sync", max_batch_size = 5, max_batch_timeout = 5, max_retries = 3, max_concurrency = 5 }
 ]
 
 [observability]

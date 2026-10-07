@@ -646,6 +646,9 @@ paths:
                             type: string
                           user:
                             $ref: "#/components/schemas/User"
+                          accountMode:
+                            type: string
+                            enum: [existing_google, existing_email, created]
         "400":
           description: Error
           content:
@@ -1319,6 +1322,67 @@ paths:
                             type: string
                           daysQueued:
                             type: integer
+    delete:
+      tags: [Mobile Sync]
+      summary: Reset dashboard sync data for the current user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Dashboard data reset; account and Google link stay intact
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [ok]
+                        properties:
+                          ok:
+                            type: boolean
+
+  /api/mobile/v1/sync/reseed:
+    post:
+      tags: [Mobile Sync]
+      summary: Rediscover sites and enqueue initial sync for sites without local data
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Reseed started or skipped for already-ready sites
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required:
+                          [ok, discoveredSites, eligibleSites, queuedSites, queuedSiteIds, queuedDays, skippedRunningSites, skippedReadySites]
+                        properties:
+                          ok:
+                            type: boolean
+                          discoveredSites:
+                            type: integer
+                          eligibleSites:
+                            type: integer
+                          queuedSites:
+                            type: integer
+                          queuedSiteIds:
+                            type: array
+                            items:
+                              type: string
+                          queuedDays:
+                            type: integer
+                          skippedRunningSites:
+                            type: integer
+                          skippedReadySites:
+                            type: integer
 
   /api/mobile/v1/sync/status:
     get:
@@ -1339,8 +1403,45 @@ paths:
                       data:
                         type: object
                         properties:
+                          summary:
+                            type: object
+                            properties:
+                              phase:
+                                type: string
+                                enum: [idle, bootstrapping, syncing, ready, error]
+                              hasAnySites:
+                                type: boolean
+                              needsReseed:
+                                type: boolean
+                              totalSites:
+                                type: integer
+                              activeSites:
+                                type: integer
+                              queuedSites:
+                                type: integer
+                              readySites:
+                                type: integer
+                              needsReseedSites:
+                                type: integer
+                              attentionSites:
+                                type: integer
+                              bootstrapProgress:
+                                type: integer
+                                nullable: true
                           statuses:
                             type: array
                             items:
                               type: object
                               additionalProperties: true
+                              properties:
+                                recentReady:
+                                  type: boolean
+                                  description: >-
+                                    True once about a month of the newest days is synced. The first sync works
+                                    newest first, so dashboard cards are usable before older history finishes.
+                                syncStage:
+                                  type: string
+                                  enum: [recent, backfill, idle]
+                                  description: >-
+                                    recent while the newest days are still being imported, backfill while older
+                                    history is imported, idle when no sync is running.
